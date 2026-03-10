@@ -90,34 +90,69 @@ fn read_history_commands(path: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// Generate shell init code that installs preexec/precmd hooks to emit markers.
-fn shell_hook_init(shell_name: &str) -> Option<String> {
-    match shell_name {
-        "zsh" => Some(format!(
-            concat!(
-                "_broll_preexec() {{ printf '{}'; }}; ",
-                "_broll_precmd() {{ printf '{}'; }}; ",
-                "autoload -Uz add-zsh-hook; ",
-                "add-zsh-hook preexec _broll_preexec; ",
-                "add-zsh-hook precmd _broll_precmd",
-            ),
-            PREEXEC_MARKER, PRECMD_MARKER,
-        )),
-        "bash" => {
-            // Bash doesn't have native preexec. Use DEBUG trap for preexec
-            // and PROMPT_COMMAND for precmd.
-            Some(format!(
+/// Create a temporary rc file that sources the user's config then installs hooks.
+/// Returns the temp dir (for zsh ZDOTDIR) or temp file path, plus the shell name.
+/// Uses shell-level escape sequences (\e and \a) so they work correctly.
+fn create_hook_rc(shell_name: &str) -> Option<tempfile::TempDir> {
+    // Use broll's data directory for temp files to avoid system TMPDIR permission issues
+    let broll_data = dirs::data_dir()?.join("broll");
+    std::fs::create_dir_all(&broll_data).ok()?;
+    let tmp_dir = tempfile::Builder::new()
+        .prefix("broll-")
+        .tempdir_in(&broll_data)
+        .ok()?;
+
+    let hook_code = match shell_name {
+        "zsh" => {
+            // Source user's zshrc first, then add hooks
+            let user_zshrc = dirs::home_dir()
+                .map(|h| h.join(".zshrc"))
+                .filter(|p| p.exists());
+            let source_line = user_zshrc
+                .map(|p| format!("[[ -f \"{}\" ]] && source \"{0}\"\n", p.display()))
+                .unwrap_or_default();
+
+            let rc_path = tmp_dir.path().join(".zshrc");
+            let content = format!(
                 concat!(
-                    r#"_broll_preexec() {{ printf '{}'; }}; "#,
-                    r#"trap '_broll_preexec' DEBUG; "#,
-                    r#"PROMPT_COMMAND="_broll_precmd;${{PROMPT_COMMAND}}"; "#,
-                    r#"_broll_precmd() {{ printf '{}'; }}"#,
+                    "{}", // source user's zshrc
+                    "_broll_preexec() {{ printf '\\e]777;broll-exec\\a'; }}\n",
+                    "_broll_precmd() {{ printf '\\e]777;broll-cmd\\a'; }}\n",
+                    "autoload -Uz add-zsh-hook\n",
+                    "add-zsh-hook preexec _broll_preexec\n",
+                    "add-zsh-hook precmd _broll_precmd\n",
                 ),
-                PREEXEC_MARKER, PRECMD_MARKER,
-            ))
+                source_line,
+            );
+            std::fs::write(&rc_path, content).ok()?;
+            Some(())
+        }
+        "bash" => {
+            let user_bashrc = dirs::home_dir()
+                .map(|h| h.join(".bashrc"))
+                .filter(|p| p.exists());
+            let source_line = user_bashrc
+                .map(|p| format!("[[ -f \"{}\" ]] && source \"{0}\"\n", p.display()))
+                .unwrap_or_default();
+
+            let rc_path = tmp_dir.path().join(".bashrc");
+            let content = format!(
+                concat!(
+                    "{}", // source user's bashrc
+                    "_broll_preexec() {{ printf '\\e]777;broll-exec\\a'; }}\n",
+                    "trap '_broll_preexec' DEBUG\n",
+                    "_broll_precmd() {{ printf '\\e]777;broll-cmd\\a'; }}\n",
+                    "PROMPT_COMMAND=\"_broll_precmd;${{PROMPT_COMMAND}}\"\n",
+                ),
+                source_line,
+            );
+            std::fs::write(&rc_path, content).ok()?;
+            Some(())
         }
         _ => None,
-    }
+    };
+
+    hook_code.map(|_| tmp_dir)
 }
 
 /// States for tracking what part of the PTY output we're in.
@@ -190,17 +225,27 @@ pub fn start_session(
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env(SESSION_ENV_VAR, &session_id);
 
-    // Install shell hooks via an rc file that sources the user's config then adds hooks
-    let hook_init = shell_hook_init(&shell_name);
-    if let Some(ref init) = hook_init {
-        cmd.env("BROLL_HOOK_INIT", init);
+    // Create temp rc file with hooks; keep _tmp_dir alive until session ends
+    let _tmp_dir = create_hook_rc(&shell_name);
+    let has_hooks = _tmp_dir.is_some();
+    if let Some(ref tmp) = _tmp_dir {
+        match shell_name.as_str() {
+            "zsh" => {
+                cmd.env("ZDOTDIR", tmp.path().to_str().unwrap_or("/tmp"));
+            }
+            "bash" => {
+                let rc_path = tmp.path().join(".bashrc");
+                cmd.args(["--rcfile", rc_path.to_str().unwrap_or("/tmp/.bashrc")]);
+            }
+            _ => {}
+        }
     }
 
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader()?;
-    let mut writer = pair.master.take_writer()?;
+    let writer = pair.master.take_writer()?;
 
     let _raw_guard = RawModeGuard::enable()?;
 
@@ -209,14 +254,8 @@ pub fn start_session(
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
-    // Send hook init command to the shell as if the user typed it
-    if let Some(ref init) = hook_init {
-        let init_cmd = format!("{}\r", init);
-        let _ = writer.write_all(init_cmd.as_bytes());
-        let _ = writer.flush();
-    }
-
     // Spawn thread to forward stdin -> PTY
+    let mut pty_writer = writer;
     let stdin_handle = std::thread::spawn(move || {
         let mut stdin = std::io::stdin();
         let mut buf = [0u8; 1024];
@@ -224,7 +263,7 @@ pub fn start_session(
             match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if writer.write_all(&buf[..n]).is_err() {
+                    if pty_writer.write_all(&buf[..n]).is_err() {
                         break;
                     }
                 }
@@ -233,19 +272,55 @@ pub fn start_session(
     });
 
     // Spawn storage thread. Uses markers to only capture real command output.
+    // Renders output through a virtual terminal (vt100) to preserve column layout.
     let storage_session_id = session_id.clone();
-    let has_hooks = hook_init.is_some();
     let storage_handle = std::thread::spawn(move || {
         let mut raw_buf = String::new();
         let mut last_data_at = Instant::now();
         let mut state = CaptureState::Idle;
+        // Accumulate raw bytes for current command output to render through vt100
+        let mut cmd_output_bytes: Vec<u8> = Vec::new();
 
-        let store_output = |content: &str, db: &Database, sid: &str, no_filt: bool| {
-            let clean = strip_ansi_escapes::strip_str(content);
+        /// Render raw terminal bytes through a virtual terminal and return plain text lines.
+        fn render_vt(raw: &[u8], term_cols: u16) -> String {
+            let mut parser = vt100::Parser::new(500, term_cols, 0);
+            parser.process(raw);
+            let screen = parser.screen();
+            let mut lines: Vec<String> = Vec::new();
+            for row in 0..screen.size().0 {
+                let line = screen.contents_between(
+                    row, 0,
+                    row, screen.size().1 - 1,
+                );
+                lines.push(line.trim_end().to_string());
+            }
+            // Trim trailing empty lines
+            while lines.last().is_some_and(|l: &String| l.is_empty()) {
+                lines.pop();
+            }
+            lines.join("\n")
+        }
+
+        /// Lines emitted by macOS zsh session save/restore — not real command output.
+        fn is_shell_noise(line: &str) -> bool {
+            let trimmed = line.trim();
+            trimmed == "Saving session..."
+                || trimmed.starts_with("...saving history...")
+                || trimmed.starts_with("...copying shared history...")
+                || trimmed.starts_with("...completed.")
+                || trimmed.starts_with("Deleting expired sessions...")
+        }
+
+        let store_rendered = |rendered: &str, db: &Database, sid: &str, no_filt: bool| {
+            let content: String = rendered
+                .lines()
+                .filter(|l| !is_shell_noise(l))
+                .collect::<Vec<_>>()
+                .join("\n");
             let content = if no_filt {
-                clean.to_string()
+                content
             } else {
-                filter::redact(&clean)
+                filter::redact(&content)
             };
             let trimmed = content.trim();
             if trimmed.is_empty() {
@@ -276,14 +351,11 @@ pub fn start_session(
                             // Process buffer looking for markers
                             loop {
                                 if state == CaptureState::Idle {
-                                    // Look for preexec marker (command about to run)
                                     if let Some(pos) = raw_buf.find(PREEXEC_MARKER) {
-                                        // Discard everything up to and including the marker
                                         raw_buf.drain(..pos + PREEXEC_MARKER.len());
                                         state = CaptureState::Capturing;
+                                        cmd_output_bytes.clear();
                                     } else {
-                                        // No marker yet — discard processed content but keep
-                                        // a tail in case a marker spans two reads
                                         let keep = PREEXEC_MARKER.len();
                                         if raw_buf.len() > keep {
                                             raw_buf.drain(..raw_buf.len() - keep);
@@ -291,70 +363,63 @@ pub fn start_session(
                                         break;
                                     }
                                 } else {
-                                    // Capturing: look for precmd marker (command finished)
                                     if let Some(pos) = raw_buf.find(PRECMD_MARKER) {
-                                        // Store everything before the marker as output
                                         let output: String = raw_buf.drain(..pos).collect();
-                                        // Skip the marker itself
                                         raw_buf.drain(..PRECMD_MARKER.len());
 
-                                        // Store line by line
-                                        for line in output.split('\n') {
-                                            store_output(
-                                                line,
-                                                &db,
-                                                &storage_session_id,
-                                                no_filter,
-                                            );
-                                        }
+                                        cmd_output_bytes.extend_from_slice(output.as_bytes());
+                                        // Render the full command output through vt100
+                                        let rendered = render_vt(&cmd_output_bytes, cols);
+                                        store_rendered(
+                                            &rendered,
+                                            &db,
+                                            &storage_session_id,
+                                            no_filter,
+                                        );
+                                        cmd_output_bytes.clear();
                                         state = CaptureState::Idle;
                                     } else {
-                                        // No end marker yet. Flush complete lines, keep the rest.
-                                        while let Some(pos) = raw_buf.find('\n') {
-                                            let line: String =
-                                                raw_buf.drain(..=pos).collect();
-                                            store_output(
-                                                &line,
-                                                &db,
-                                                &storage_session_id,
-                                                no_filter,
-                                            );
-                                        }
+                                        // No end marker yet — buffer the raw bytes
+                                        let buffered: String = raw_buf.drain(..).collect();
+                                        cmd_output_bytes.extend_from_slice(buffered.as_bytes());
                                         break;
                                     }
                                 }
                             }
                         } else {
-                            // No hooks: fallback to storing all output lines
-                            while let Some(pos) = raw_buf.find('\n') {
-                                let line: String = raw_buf.drain(..=pos).collect();
-                                store_output(&line, &db, &storage_session_id, no_filter);
-                            }
+                            // No hooks: accumulate output, render through vt100
+                            // on newlines to preserve column layout
+                            cmd_output_bytes.extend_from_slice(raw_buf.as_bytes());
+                            raw_buf.clear();
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if !raw_buf.is_empty()
-                            && last_data_at.elapsed() >= INCOMPLETE_LINE_TIMEOUT
-                        {
-                            if !has_hooks || state == CaptureState::Capturing {
-                                let leftover: String = raw_buf.drain(..).collect();
-                                store_output(
-                                    &leftover,
-                                    &db,
-                                    &storage_session_id,
-                                    no_filter,
-                                );
-                            } else {
-                                raw_buf.clear();
+                        // Flush accumulated output on timeout
+                        if last_data_at.elapsed() >= INCOMPLETE_LINE_TIMEOUT {
+                            cmd_output_bytes.extend_from_slice(raw_buf.as_bytes());
+                            raw_buf.clear();
+                            if !cmd_output_bytes.is_empty() {
+                                if !has_hooks || state == CaptureState::Capturing {
+                                    let rendered = render_vt(&cmd_output_bytes, cols);
+                                    store_rendered(
+                                        &rendered,
+                                        &db,
+                                        &storage_session_id,
+                                        no_filter,
+                                    );
+                                }
+                                cmd_output_bytes.clear();
                             }
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        if !raw_buf.is_empty()
+                        cmd_output_bytes.extend_from_slice(raw_buf.as_bytes());
+                        if !cmd_output_bytes.is_empty()
                             && (!has_hooks || state == CaptureState::Capturing)
                         {
-                            store_output(
-                                &raw_buf,
+                            let rendered = render_vt(&cmd_output_bytes, cols);
+                            store_rendered(
+                                &rendered,
                                 &db,
                                 &storage_session_id,
                                 no_filter,
