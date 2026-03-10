@@ -104,7 +104,12 @@ fn run_loop(terminal: &mut DefaultTerminal, mut app: SearchApp) -> Result<()> {
                 })
                 .collect();
 
-            let list_title = format!(" Results for '{}' ({}) ", app.query, app.hits.len());
+            let count_display = if app.hits.len() >= 100 {
+                "100+ results".to_string()
+            } else {
+                format!("{}", app.hits.len())
+            };
+            let list_title = format!(" Results for '{}' ({}) ", app.query, count_display);
             let list = List::new(items)
                 .block(
                     Block::default()
