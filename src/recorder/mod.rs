@@ -31,8 +31,57 @@ impl Drop for RawModeGuard {
 }
 
 /// How long to wait for more data before flushing an incomplete line to DB.
-/// This covers streaming output that doesn't end with newlines (progress bars, etc).
 const INCOMPLETE_LINE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Get the history file path for the current shell.
+fn history_file_path(shell: &str) -> Option<std::path::PathBuf> {
+    // Check HISTFILE env var first (works for both bash and zsh)
+    if let Ok(histfile) = std::env::var("HISTFILE") {
+        let path = std::path::PathBuf::from(histfile);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let home = dirs::home_dir()?;
+    let shell_name = std::path::Path::new(shell)
+        .file_name()?
+        .to_str()?;
+
+    let path = match shell_name {
+        "zsh" => home.join(".zsh_history"),
+        "bash" => home.join(".bash_history"),
+        "fish" => home.join(".local/share/fish/fish_history"),
+        _ => return None,
+    };
+
+    if path.exists() { Some(path) } else { None }
+}
+
+/// Read commands from a history file, returning the lines.
+/// Handles zsh extended history format (`: timestamp:0;command`).
+fn read_history_commands(path: &std::path::Path) -> Vec<String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            // zsh extended history format: ": 1234567890:0;actual command"
+            if line.starts_with(": ") {
+                line.splitn(2, ';').nth(1).map(|s| s.to_string())
+            } else {
+                Some(line.to_string())
+            }
+        })
+        .collect()
+}
 
 /// Start a recording session by spawning a sub-shell in a PTY.
 pub fn start_session(
@@ -62,6 +111,13 @@ pub fn start_session(
 
     let db = Database::open()?;
     db.create_session(&session)?;
+
+    // Snapshot shell history before starting so we can diff later
+    let history_path = history_file_path(&shell);
+    let history_before_count = history_path
+        .as_ref()
+        .map(|p| read_history_commands(p).len())
+        .unwrap_or(0);
 
     println!("broll: recording started (session {})", &session_id[..8]);
     println!("broll: exit the shell or run `broll stop` to end recording");
@@ -95,191 +151,62 @@ pub fn start_session(
     let resize_flag = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resize_flag))?;
 
-    // Channels: one for PTY output, one for stdin (user input)
-    enum StorageMsg {
-        Output(Vec<u8>),
-        Input(Vec<u8>),
-    }
-    let (tx, rx) = mpsc::channel::<StorageMsg>();
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
-    // Spawn thread to forward stdin -> PTY and capture commands.
-    // Uses a String buffer so backspace/ctrl-w work correctly with multibyte UTF-8.
-    let input_tx = tx.clone();
+    // Spawn thread to forward stdin -> PTY
     let stdin_handle = std::thread::spawn(move || {
         let mut stdin = std::io::stdin();
         let mut buf = [0u8; 1024];
-        let mut cmd_buf = String::new();
-        let mut utf8_buf = Vec::new();
         loop {
             match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let data = &buf[..n];
-                    if writer.write_all(data).is_err() {
+                    if writer.write_all(&buf[..n]).is_err() {
                         break;
                     }
-                    // Accumulate bytes and decode UTF-8 as chars become complete
-                    utf8_buf.extend_from_slice(data);
-                    let text = String::from_utf8_lossy(&utf8_buf);
-                    let consumed = text.len();
-                    let chars: Vec<char> = text.chars().collect();
-
-                    // Keep any trailing incomplete UTF-8 sequence
-                    let valid_bytes = text.as_bytes().len();
-                    if valid_bytes < utf8_buf.len()
-                        && !text.ends_with('\u{FFFD}')
-                    {
-                        utf8_buf.drain(..valid_bytes);
-                    } else {
-                        utf8_buf.clear();
-                    }
-
-                    for ch in chars {
-                        if ch == '\u{FFFD}' {
-                            continue; // skip replacement chars from incomplete sequences
-                        }
-                        match ch {
-                            '\r' | '\n' => {
-                                if !cmd_buf.is_empty() {
-                                    let _ = input_tx.send(StorageMsg::Input(
-                                        cmd_buf.as_bytes().to_vec(),
-                                    ));
-                                    cmd_buf.clear();
-                                }
-                            }
-                            '\x7f' | '\x08' => {
-                                // Backspace — remove last char (works with multibyte)
-                                cmd_buf.pop();
-                            }
-                            '\x15' => {
-                                // Ctrl-U — clear line
-                                cmd_buf.clear();
-                            }
-                            '\x17' => {
-                                // Ctrl-W — delete last word
-                                let trimmed = cmd_buf.trim_end_matches(' ');
-                                let word_start = trimmed.rfind(' ').map(|i| i + 1).unwrap_or(0);
-                                cmd_buf.truncate(word_start);
-                            }
-                            '\x03' => {
-                                // Ctrl-C — discard current input
-                                cmd_buf.clear();
-                            }
-                            c if c >= ' ' => {
-                                cmd_buf.push(c);
-                            }
-                            _ => {}
-                        }
-                    }
-                    let _ = consumed; // suppress unused warning
                 }
             }
         }
     });
 
-    // Spawn storage thread that handles both input commands and output lines.
+    // Spawn storage thread that buffers output by complete lines.
     let storage_session_id = session_id.clone();
     let storage_handle = std::thread::spawn(move || {
         let mut line_buf = String::new();
         let mut last_data_at = Instant::now();
-        // Track recent commands so we can suppress their PTY echo in the output
-        let mut recent_commands: Vec<String> = Vec::new();
 
-        let store_chunk =
-            |content: &str, kind: ChunkKind, db: &Database, sid: &str, no_filt: bool| {
-                let clean = strip_ansi_escapes::strip_str(content);
-                let content = if no_filt {
-                    clean.to_string()
-                } else {
-                    filter::redact(&clean)
-                };
-                if !content.trim().is_empty() {
-                    let chunk = Chunk {
-                        id: 0,
-                        session_id: sid.to_string(),
-                        timestamp: Utc::now(),
-                        content,
-                        kind,
-                    };
-                    if let Err(e) = db.insert_chunk(&chunk) {
-                        eprintln!("broll: failed to store chunk: {e}");
-                    }
-                }
+        let store_line = |line: &str, db: &Database, sid: &str, no_filt: bool| {
+            let clean = strip_ansi_escapes::strip_str(line);
+            let content = if no_filt {
+                clean.to_string()
+            } else {
+                filter::redact(&clean)
             };
-
-        /// Check if an output line is just the echo of a recent command.
-        /// The PTY echoes "prompt + command", so we check if the line ends with
-        /// a recent command and the prefix is short enough to be a prompt.
-        fn is_echo(line: &str, recent_commands: &mut Vec<String>) -> bool {
-            let cleaned = strip_ansi_escapes::strip_str(line);
-            let trimmed = cleaned.trim();
-            if trimmed.is_empty() {
-                return false;
+            if !content.trim().is_empty() {
+                let chunk = Chunk {
+                    id: 0,
+                    session_id: sid.to_string(),
+                    timestamp: Utc::now(),
+                    content,
+                    kind: ChunkKind::Output,
+                };
+                if let Err(e) = db.insert_chunk(&chunk) {
+                    eprintln!("broll: failed to store chunk: {e}");
+                }
             }
-            if let Some(pos) = recent_commands.iter().position(|cmd| {
-                let cmd = cmd.trim();
-                if cmd.is_empty() {
-                    return false;
-                }
-                if trimmed == cmd {
-                    return true;
-                }
-                // Check if line is "prompt + command" where prompt is reasonably short
-                if let Some(prefix_end) = trimmed.rfind(cmd) {
-                    let prefix = trimmed[..prefix_end].trim();
-                    // Prompt is typically short (< 80 chars) and often ends with $, >, #, %
-                    prefix.len() < 80
-                        && (prefix.is_empty()
-                            || prefix.ends_with('$')
-                            || prefix.ends_with('>')
-                            || prefix.ends_with('#')
-                            || prefix.ends_with('%'))
-                } else {
-                    false
-                }
-            }) {
-                recent_commands.remove(pos);
-                return true;
-            }
-            false
-        }
+        };
 
         if let Ok(db) = Database::open() {
             loop {
                 match rx.recv_timeout(INCOMPLETE_LINE_TIMEOUT) {
-                    Ok(StorageMsg::Input(data)) => {
-                        // Complete command from stdin — store immediately
-                        let cmd = String::from_utf8_lossy(&data).to_string();
-                        recent_commands.push(cmd.clone());
-                        // Keep only the last few to avoid unbounded growth
-                        if recent_commands.len() > 10 {
-                            recent_commands.remove(0);
-                        }
-                        store_chunk(
-                            &cmd,
-                            ChunkKind::Input,
-                            &db,
-                            &storage_session_id,
-                            no_filter,
-                        );
-                    }
-                    Ok(StorageMsg::Output(data)) => {
+                    Ok(data) => {
                         last_data_at = Instant::now();
                         let text = String::from_utf8_lossy(&data);
                         line_buf.push_str(&text);
 
-                        // Flush all complete lines, skipping echoed commands
                         while let Some(pos) = line_buf.find('\n') {
                             let line: String = line_buf.drain(..=pos).collect();
-                            if !is_echo(&line, &mut recent_commands) {
-                                store_chunk(
-                                    &line,
-                                    ChunkKind::Output,
-                                    &db,
-                                    &storage_session_id,
-                                    no_filter,
-                                );
-                            }
+                            store_line(&line, &db, &storage_session_id, no_filter);
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -287,24 +214,12 @@ pub fn start_session(
                             && last_data_at.elapsed() >= INCOMPLETE_LINE_TIMEOUT
                         {
                             let leftover: String = line_buf.drain(..).collect();
-                            store_chunk(
-                                &leftover,
-                                ChunkKind::Output,
-                                &db,
-                                &storage_session_id,
-                                no_filter,
-                            );
+                            store_line(&leftover, &db, &storage_session_id, no_filter);
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         if !line_buf.is_empty() {
-                            store_chunk(
-                                &line_buf,
-                                ChunkKind::Output,
-                                &db,
-                                &storage_session_id,
-                                no_filter,
-                            );
+                            store_line(&line_buf, &db, &storage_session_id, no_filter);
                         }
                         break;
                     }
@@ -334,13 +249,9 @@ pub fn start_session(
             Ok(0) => break,
             Ok(n) => {
                 let raw = &buf[..n];
-
-                // Write to stdout immediately (with ANSI codes for proper display)
                 stdout.write_all(raw)?;
                 stdout.flush()?;
-
-                // Send raw bytes to storage thread for buffering
-                let _ = tx.send(StorageMsg::Output(raw.to_vec()));
+                let _ = tx.send(raw.to_vec());
             }
             Err(_) => break,
         }
@@ -349,12 +260,43 @@ pub fn start_session(
     // Signal storage thread to finish
     drop(tx);
 
-    // Restore terminal (guard handles this, but drop explicitly for clarity)
+    // Restore terminal
     drop(_raw_guard);
 
     let _ = child.wait();
     let _ = stdin_handle.join();
     let _ = storage_handle.join();
+
+    // Extract new commands from shell history by diffing before/after
+    if let Some(ref hist_path) = history_path {
+        let all_commands = read_history_commands(hist_path);
+        let new_commands = &all_commands[history_before_count..];
+
+        for cmd_text in new_commands {
+            let content = if no_filter {
+                cmd_text.clone()
+            } else {
+                filter::redact(cmd_text)
+            };
+            let chunk = Chunk {
+                id: 0,
+                session_id: session_id.clone(),
+                timestamp: Utc::now(),
+                content,
+                kind: ChunkKind::Input,
+            };
+            if let Err(e) = db.insert_chunk(&chunk) {
+                eprintln!("broll: failed to store command: {e}");
+            }
+        }
+
+        if !new_commands.is_empty() {
+            eprintln!(
+                "broll: captured {} commands from shell history",
+                new_commands.len()
+            );
+        }
+    }
 
     db.end_session(&session_id)?;
     println!("\nbroll: session {} ended", &session_id[..8]);
