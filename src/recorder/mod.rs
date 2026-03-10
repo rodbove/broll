@@ -13,8 +13,9 @@ use crate::storage::Database;
 /// Marker env var so we can detect nested sessions and stop gracefully.
 const SESSION_ENV_VAR: &str = "BROLL_SESSION_ID";
 
-/// How long to buffer output before flushing to DB.
-const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+/// How long to wait for more data before flushing an incomplete line to DB.
+/// This covers streaming output that doesn't end with newlines (progress bars, etc).
+const INCOMPLETE_LINE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Start a recording session by spawning a sub-shell in a PTY.
 pub fn start_session(
@@ -73,76 +74,175 @@ pub fn start_session(
     // Put terminal into raw mode
     crossterm::terminal::enable_raw_mode()?;
 
-    // Spawn thread to forward stdin -> PTY
+    // Channels: one for PTY output, one for stdin (user input)
+    enum StorageMsg {
+        Output(Vec<u8>),
+        Input(Vec<u8>),
+    }
+    let (tx, rx) = mpsc::channel::<StorageMsg>();
+
+    // Spawn thread to forward stdin -> PTY and capture commands
+    let input_tx = tx.clone();
     let stdin_handle = std::thread::spawn(move || {
         let mut stdin = std::io::stdin();
         let mut buf = [0u8; 1024];
+        let mut cmd_buf = Vec::new();
         loop {
             match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if writer.write_all(&buf[..n]).is_err() {
+                    let data = &buf[..n];
+                    if writer.write_all(data).is_err() {
                         break;
+                    }
+                    for &byte in data {
+                        match byte {
+                            b'\r' | b'\n' => {
+                                // Enter pressed — flush the accumulated command
+                                if !cmd_buf.is_empty() {
+                                    let _ = input_tx.send(StorageMsg::Input(cmd_buf.clone()));
+                                    cmd_buf.clear();
+                                }
+                            }
+                            0x7f | 0x08 => {
+                                // Backspace/delete — remove last char
+                                cmd_buf.pop();
+                            }
+                            0x15 => {
+                                // Ctrl-U — clear line
+                                cmd_buf.clear();
+                            }
+                            0x17 => {
+                                // Ctrl-W — delete last word
+                                while cmd_buf.last().is_some_and(|&b| b == b' ') {
+                                    cmd_buf.pop();
+                                }
+                                while cmd_buf.last().is_some_and(|&b| b != b' ') {
+                                    cmd_buf.pop();
+                                }
+                            }
+                            0x03 => {
+                                // Ctrl-C — discard current input
+                                cmd_buf.clear();
+                            }
+                            b if b >= 0x20 => {
+                                // Printable characters
+                                cmd_buf.push(byte);
+                            }
+                            _ => {
+                                // Ignore other control chars (arrows, etc.)
+                            }
+                        }
                     }
                 }
             }
         }
     });
 
-    // Channel for sending captured output to the storage thread
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-
-    // Spawn storage thread that buffers and coalesces chunks
+    // Spawn storage thread that handles both input commands and output lines.
     let storage_session_id = session_id.clone();
     let storage_handle = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let mut last_flush = Instant::now();
+        let mut line_buf = String::new();
+        let mut last_data_at = Instant::now();
+        // Track recent commands so we can suppress their PTY echo in the output
+        let mut recent_commands: Vec<String> = Vec::new();
 
-        let flush = |buf: &mut Vec<u8>, db: &Database, sid: &str, no_filt: bool| {
-            if buf.is_empty() {
-                return;
-            }
-            let text = String::from_utf8_lossy(buf).to_string();
-            // Strip ANSI escapes before storing
-            let clean = strip_ansi_escapes::strip_str(&text);
-            let content = if no_filt {
-                clean.to_string()
-            } else {
-                filter::redact(&clean)
+        let store_chunk =
+            |content: &str, kind: ChunkKind, db: &Database, sid: &str, no_filt: bool| {
+                let clean = strip_ansi_escapes::strip_str(content);
+                let content = if no_filt {
+                    clean.to_string()
+                } else {
+                    filter::redact(&clean)
+                };
+                if !content.trim().is_empty() {
+                    let chunk = Chunk {
+                        id: 0,
+                        session_id: sid.to_string(),
+                        timestamp: Utc::now(),
+                        content,
+                        kind,
+                    };
+                    let _ = db.insert_chunk(&chunk);
+                }
             };
 
-            if !content.trim().is_empty() {
-                let chunk = Chunk {
-                    id: 0,
-                    session_id: sid.to_string(),
-                    timestamp: Utc::now(),
-                    content,
-                    kind: ChunkKind::Output,
-                };
-                let _ = db.insert_chunk(&chunk);
+        /// Check if an output line is just the echo of a recent command.
+        fn is_echo(line: &str, recent_commands: &mut Vec<String>) -> bool {
+            let cleaned = strip_ansi_escapes::strip_str(line);
+            let trimmed = cleaned.trim();
+            if let Some(pos) = recent_commands
+                .iter()
+                .position(|cmd| trimmed.ends_with(cmd.trim()))
+            {
+                recent_commands.remove(pos);
+                return true;
             }
-            buf.clear();
-        };
+            false
+        }
 
         if let Ok(db) = Database::open() {
             loop {
-                match rx.recv_timeout(FLUSH_INTERVAL) {
-                    Ok(data) => {
-                        buffer.extend_from_slice(&data);
-                        // Flush if buffer has a complete line or enough time passed
-                        if buffer.contains(&b'\n') || last_flush.elapsed() >= FLUSH_INTERVAL {
-                            flush(&mut buffer, &db, &storage_session_id, no_filter);
-                            last_flush = Instant::now();
+                match rx.recv_timeout(INCOMPLETE_LINE_TIMEOUT) {
+                    Ok(StorageMsg::Input(data)) => {
+                        // Complete command from stdin — store immediately
+                        let cmd = String::from_utf8_lossy(&data).to_string();
+                        recent_commands.push(cmd.clone());
+                        // Keep only the last few to avoid unbounded growth
+                        if recent_commands.len() > 10 {
+                            recent_commands.remove(0);
+                        }
+                        store_chunk(
+                            &cmd,
+                            ChunkKind::Input,
+                            &db,
+                            &storage_session_id,
+                            no_filter,
+                        );
+                    }
+                    Ok(StorageMsg::Output(data)) => {
+                        last_data_at = Instant::now();
+                        let text = String::from_utf8_lossy(&data);
+                        line_buf.push_str(&text);
+
+                        // Flush all complete lines, skipping echoed commands
+                        while let Some(pos) = line_buf.find('\n') {
+                            let line: String = line_buf.drain(..=pos).collect();
+                            if !is_echo(&line, &mut recent_commands) {
+                                store_chunk(
+                                    &line,
+                                    ChunkKind::Output,
+                                    &db,
+                                    &storage_session_id,
+                                    no_filter,
+                                );
+                            }
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        // Flush whatever we have buffered
-                        flush(&mut buffer, &db, &storage_session_id, no_filter);
-                        last_flush = Instant::now();
+                        if !line_buf.is_empty()
+                            && last_data_at.elapsed() >= INCOMPLETE_LINE_TIMEOUT
+                        {
+                            let leftover: String = line_buf.drain(..).collect();
+                            store_chunk(
+                                &leftover,
+                                ChunkKind::Output,
+                                &db,
+                                &storage_session_id,
+                                no_filter,
+                            );
+                        }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        // Final flush
-                        flush(&mut buffer, &db, &storage_session_id, no_filter);
+                        if !line_buf.is_empty() {
+                            store_chunk(
+                                &line_buf,
+                                ChunkKind::Output,
+                                &db,
+                                &storage_session_id,
+                                no_filter,
+                            );
+                        }
                         break;
                     }
                 }
@@ -165,7 +265,7 @@ pub fn start_session(
                 stdout.flush()?;
 
                 // Send raw bytes to storage thread for buffering
-                let _ = tx.send(raw.to_vec());
+                let _ = tx.send(StorageMsg::Output(raw.to_vec()));
             }
             Err(_) => break,
         }
