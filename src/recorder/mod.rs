@@ -13,6 +13,22 @@ use crate::storage::Database;
 /// Marker env var so we can detect nested sessions and stop gracefully.
 const SESSION_ENV_VAR: &str = "BROLL_SESSION_ID";
 
+/// RAII guard that restores terminal from raw mode on drop.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
 /// How long to wait for more data before flushing an incomplete line to DB.
 /// This covers streaming output that doesn't end with newlines (progress bars, etc).
 const INCOMPLETE_LINE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -71,8 +87,8 @@ pub fn start_session(
     let mut reader = pair.master.try_clone_reader()?;
     let mut writer = pair.master.take_writer()?;
 
-    // Put terminal into raw mode
-    crossterm::terminal::enable_raw_mode()?;
+    // Put terminal into raw mode (guard restores on drop, even on panic/error)
+    let _raw_guard = RawModeGuard::enable()?;
 
     // Channels: one for PTY output, one for stdin (user input)
     enum StorageMsg {
@@ -274,8 +290,8 @@ pub fn start_session(
     // Signal storage thread to finish
     drop(tx);
 
-    // Restore terminal
-    crossterm::terminal::disable_raw_mode()?;
+    // Restore terminal (guard handles this, but drop explicitly for clarity)
+    drop(_raw_guard);
 
     let _ = child.wait();
     let _ = stdin_handle.join();
