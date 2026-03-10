@@ -14,11 +14,13 @@ use crate::storage::Database;
 /// Marker env var so we can detect nested sessions and stop gracefully.
 const SESSION_ENV_VAR: &str = "BROLL_SESSION_ID";
 
-/// Unique marker emitted by shell hooks to delimit command output.
-/// Uses an OSC sequence that terminals silently ignore.
+/// Unique markers emitted by shell hooks to delimit command output.
+/// Uses OSC sequences that terminals silently ignore.
 /// PRECMD marker = prompt is about to be shown (command finished).
-/// PREEXEC marker = command is about to execute.
-const PREEXEC_MARKER: &str = "\x1b]777;broll-exec\x07";
+/// PREEXEC marker = command is about to execute (contains the command text, percent-encoded).
+/// Format: \x1b]777;broll-exec;ENCODED_COMMAND\x07
+const PREEXEC_MARKER_PREFIX: &str = "\x1b]777;broll-exec;";
+const PREEXEC_MARKER_END: char = '\x07';
 const PRECMD_MARKER: &str = "\x1b]777;broll-cmd\x07";
 
 /// RAII guard that restores terminal from raw mode on drop.
@@ -40,59 +42,9 @@ impl Drop for RawModeGuard {
 /// How long to wait for more data before flushing an incomplete line to DB.
 const INCOMPLETE_LINE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Get the history file path for the current shell.
-fn history_file_path(shell: &str) -> Option<std::path::PathBuf> {
-    if let Ok(histfile) = std::env::var("HISTFILE") {
-        let path = std::path::PathBuf::from(histfile);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    let home = dirs::home_dir()?;
-    let shell_name = std::path::Path::new(shell).file_name()?.to_str()?;
-
-    let path = match shell_name {
-        "zsh" => home.join(".zsh_history"),
-        "bash" => home.join(".bash_history"),
-        "fish" => home.join(".local/share/fish/fish_history"),
-        _ => return None,
-    };
-
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
-}
-
-/// Read commands from a history file.
-/// Handles zsh extended history format (`: timestamp:0;command`).
-fn read_history_commands(path: &std::path::Path) -> Vec<String> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    content
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() {
-                return None;
-            }
-            if line.starts_with(": ") {
-                line.splitn(2, ';').nth(1).map(|s| s.to_string())
-            } else {
-                Some(line.to_string())
-            }
-        })
-        .collect()
-}
-
 /// Create a temporary rc file that sources the user's config then installs hooks.
-/// Returns the temp dir (for zsh ZDOTDIR) or temp file path, plus the shell name.
-/// Uses shell-level escape sequences (\e and \a) so they work correctly.
+/// The preexec hook emits the command text directly inside the OSC marker.
+/// Only BEL (\x07) could break the marker, so we strip it with parameter expansion.
 fn create_hook_rc(shell_name: &str) -> Option<tempfile::TempDir> {
     // Use broll's data directory for temp files to avoid system TMPDIR permission issues
     let broll_data = dirs::data_dir()?.join("broll");
@@ -104,7 +56,6 @@ fn create_hook_rc(shell_name: &str) -> Option<tempfile::TempDir> {
 
     let hook_code = match shell_name {
         "zsh" => {
-            // Source user's zshrc first, then add hooks
             let user_zshrc = dirs::home_dir()
                 .map(|h| h.join(".zshrc"))
                 .filter(|p| p.exists());
@@ -113,10 +64,15 @@ fn create_hook_rc(shell_name: &str) -> Option<tempfile::TempDir> {
                 .unwrap_or_default();
 
             let rc_path = tmp_dir.path().join(".zshrc");
+            // zsh preexec receives the command line as $1
+            // Strip BEL chars to avoid breaking the OSC sequence
             let content = format!(
                 concat!(
                     "{}", // source user's zshrc
-                    "_broll_preexec() {{ printf '\\e]777;broll-exec\\a'; }}\n",
+                    "_broll_preexec() {{\n",
+                    "  local cmd=\"${{1//$'\\a'/}}\"\n",
+                    "  printf '\\e]777;broll-exec;%s\\a' \"$cmd\"\n",
+                    "}}\n",
                     "_broll_precmd() {{ printf '\\e]777;broll-cmd\\a'; }}\n",
                     "autoload -Uz add-zsh-hook\n",
                     "add-zsh-hook preexec _broll_preexec\n",
@@ -136,12 +92,22 @@ fn create_hook_rc(shell_name: &str) -> Option<tempfile::TempDir> {
                 .unwrap_or_default();
 
             let rc_path = tmp_dir.path().join(".bashrc");
+            // bash: emit the last command in precmd (before the precmd marker)
+            // using fc -ln -1 to get the full command line
             let content = format!(
                 concat!(
                     "{}", // source user's bashrc
-                    "_broll_preexec() {{ printf '\\e]777;broll-exec\\a'; }}\n",
-                    "trap '_broll_preexec' DEBUG\n",
-                    "_broll_precmd() {{ printf '\\e]777;broll-cmd\\a'; }}\n",
+                    "_broll_last_hist=\"\"\n",
+                    "_broll_precmd() {{\n",
+                    "  local cmd\n",
+                    "  cmd=$(fc -ln -1 2>/dev/null | sed 's/^[[:space:]]*//')\n",
+                    "  cmd=\"${{cmd//$'\\a'/}}\"\n",
+                    "  if [[ -n \"$cmd\" && \"$cmd\" != \"$_broll_last_hist\" ]]; then\n",
+                    "    _broll_last_hist=\"$cmd\"\n",
+                    "    printf '\\e]777;broll-exec;%s\\a' \"$cmd\"\n",
+                    "  fi\n",
+                    "  printf '\\e]777;broll-cmd\\a'\n",
+                    "}}\n",
                     "PROMPT_COMMAND=\"_broll_precmd;${{PROMPT_COMMAND}}\"\n",
                 ),
                 source_line,
@@ -193,13 +159,6 @@ pub fn start_session(
 
     let db = Database::open()?;
     db.create_session(&session)?;
-
-    // Snapshot shell history before starting so we can diff later for commands
-    let history_path = history_file_path(&shell);
-    let history_before_count = history_path
-        .as_ref()
-        .map(|p| read_history_commands(p).len())
-        .unwrap_or(0);
 
     println!("broll: recording started (session {})", &session_id[..8]);
     println!("broll: exit the shell or run `broll stop` to end recording");
@@ -311,8 +270,8 @@ pub fn start_session(
                 || trimmed.starts_with("Deleting expired sessions...")
         }
 
-        let store_rendered = |rendered: &str, db: &Database, sid: &str, no_filt: bool| {
-            let content: String = rendered
+        let store_chunk = |content_raw: &str, kind: ChunkKind, db: &Database, sid: &str, no_filt: bool| {
+            let content: String = content_raw
                 .lines()
                 .filter(|l| !is_shell_noise(l))
                 .collect::<Vec<_>>()
@@ -332,7 +291,7 @@ pub fn start_session(
                 session_id: sid.to_string(),
                 timestamp: Utc::now(),
                 content,
-                kind: ChunkKind::Output,
+                kind,
             };
             if let Err(e) = db.insert_chunk(&chunk) {
                 eprintln!("broll: failed to store chunk: {e}");
@@ -351,12 +310,29 @@ pub fn start_session(
                             // Process buffer looking for markers
                             loop {
                                 if state == CaptureState::Idle {
-                                    if let Some(pos) = raw_buf.find(PREEXEC_MARKER) {
-                                        raw_buf.drain(..pos + PREEXEC_MARKER.len());
-                                        state = CaptureState::Capturing;
-                                        cmd_output_bytes.clear();
+                                    // Look for preexec marker: \x1b]777;broll-exec;ENCODED\x07
+                                    if let Some(pos) = raw_buf.find(PREEXEC_MARKER_PREFIX) {
+                                        let after_prefix = pos + PREEXEC_MARKER_PREFIX.len();
+                                        // Find the BEL terminator
+                                        if let Some(end) = raw_buf[after_prefix..].find(PREEXEC_MARKER_END) {
+                                            let command = raw_buf[after_prefix..after_prefix + end].to_string();
+                                            // Store the command as input
+                                            store_chunk(
+                                                &command,
+                                                ChunkKind::Input,
+                                                &db,
+                                                &storage_session_id,
+                                                no_filter,
+                                            );
+                                            raw_buf.drain(..after_prefix + end + 1);
+                                            state = CaptureState::Capturing;
+                                            cmd_output_bytes.clear();
+                                        } else {
+                                            // BEL not yet received — keep buffering
+                                            break;
+                                        }
                                     } else {
-                                        let keep = PREEXEC_MARKER.len();
+                                        let keep = PREEXEC_MARKER_PREFIX.len();
                                         if raw_buf.len() > keep {
                                             raw_buf.drain(..raw_buf.len() - keep);
                                         }
@@ -368,10 +344,10 @@ pub fn start_session(
                                         raw_buf.drain(..PRECMD_MARKER.len());
 
                                         cmd_output_bytes.extend_from_slice(output.as_bytes());
-                                        // Render the full command output through vt100
                                         let rendered = render_vt(&cmd_output_bytes, cols);
-                                        store_rendered(
+                                        store_chunk(
                                             &rendered,
+                                            ChunkKind::Output,
                                             &db,
                                             &storage_session_id,
                                             no_filter,
@@ -401,8 +377,9 @@ pub fn start_session(
                             if !cmd_output_bytes.is_empty() {
                                 if !has_hooks || state == CaptureState::Capturing {
                                     let rendered = render_vt(&cmd_output_bytes, cols);
-                                    store_rendered(
+                                    store_chunk(
                                         &rendered,
+                                        ChunkKind::Output,
                                         &db,
                                         &storage_session_id,
                                         no_filter,
@@ -418,8 +395,9 @@ pub fn start_session(
                             && (!has_hooks || state == CaptureState::Capturing)
                         {
                             let rendered = render_vt(&cmd_output_bytes, cols);
-                            store_rendered(
+                            store_chunk(
                                 &rendered,
+                                ChunkKind::Output,
                                 &db,
                                 &storage_session_id,
                                 no_filter,
@@ -456,9 +434,17 @@ pub fn start_session(
                 // Strip markers before writing to stdout so they stay invisible
                 let text = String::from_utf8_lossy(raw);
                 if text.contains("\x1b]777;broll") {
-                    let cleaned = text
-                        .replace(PREEXEC_MARKER, "")
-                        .replace(PRECMD_MARKER, "");
+                    let mut cleaned = text.replace(PRECMD_MARKER, "");
+                    // Strip variable-length preexec markers: \x1b]777;broll-exec;...\x07
+                    while let Some(start) = cleaned.find(PREEXEC_MARKER_PREFIX) {
+                        if let Some(end) = cleaned[start..].find(PREEXEC_MARKER_END) {
+                            cleaned.replace_range(start..start + end + 1, "");
+                        } else {
+                            // Incomplete marker at end — truncate it
+                            cleaned.truncate(start);
+                            break;
+                        }
+                    }
                     stdout.write_all(cleaned.as_bytes())?;
                 } else {
                     stdout.write_all(raw)?;
@@ -478,39 +464,6 @@ pub fn start_session(
     let _ = child.wait();
     let _ = stdin_handle.join();
     let _ = storage_handle.join();
-
-    // Extract commands from shell history diff
-    if let Some(ref hist_path) = history_path {
-        let all_commands = read_history_commands(hist_path);
-        if history_before_count < all_commands.len() {
-            let new_commands = &all_commands[history_before_count..];
-
-            for cmd_text in new_commands {
-                let content = if no_filter {
-                    cmd_text.clone()
-                } else {
-                    filter::redact(cmd_text)
-                };
-                let chunk = Chunk {
-                    id: 0,
-                    session_id: session_id.clone(),
-                    timestamp: Utc::now(),
-                    content,
-                    kind: ChunkKind::Input,
-                };
-                if let Err(e) = db.insert_chunk(&chunk) {
-                    eprintln!("broll: failed to store command: {e}");
-                }
-            }
-
-            if !new_commands.is_empty() {
-                eprintln!(
-                    "broll: captured {} commands from shell history",
-                    new_commands.len()
-                );
-            }
-        }
-    }
 
     db.end_session(&session_id)?;
     println!("\nbroll: session {} ended", &session_id[..8]);
