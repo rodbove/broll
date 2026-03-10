@@ -23,6 +23,10 @@ pub enum Command {
         /// Disable sensitive content filtering
         #[arg(long, default_value_t = false)]
         no_filter: bool,
+
+        /// Working directory for the session (defaults to current directory)
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
     },
 
     /// Stop the current recording session

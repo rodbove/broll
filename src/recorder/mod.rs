@@ -137,6 +137,7 @@ pub fn start_session(
     tag: Option<String>,
     group: Option<String>,
     no_filter: bool,
+    dir: Option<std::path::PathBuf>,
 ) -> Result<()> {
     if std::env::var(SESSION_ENV_VAR).is_ok() {
         anyhow::bail!("Already inside a broll session. Run `exit` or `broll stop` first.");
@@ -184,6 +185,10 @@ pub fn start_session(
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env(SESSION_ENV_VAR, &session_id);
 
+    // Set working directory (defaults to current directory)
+    let work_dir = dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+    cmd.cwd(&work_dir);
+
     // Create temp rc file with hooks; keep _tmp_dir alive until session ends
     let _tmp_dir = create_hook_rc(&shell_name);
     let has_hooks = _tmp_dir.is_some();
@@ -215,7 +220,7 @@ pub fn start_session(
 
     // Spawn thread to forward stdin -> PTY
     let mut pty_writer = writer;
-    let stdin_handle = std::thread::spawn(move || {
+    let _stdin_handle = std::thread::spawn(move || {
         let mut stdin = std::io::stdin();
         let mut buf = [0u8; 1024];
         loop {
@@ -463,14 +468,18 @@ pub fn start_session(
     }
 
     drop(tx);
-    drop(_raw_guard);
 
     let _ = child.wait();
-    let _ = stdin_handle.join();
+
+    // Drop raw mode BEFORE printing the exit message so \n works normally
+    drop(_raw_guard);
+
+    // Don't join stdin_handle — it blocks on stdin.read() until user presses a key.
+    // It will be cleaned up when the process exits.
     let _ = storage_handle.join();
 
     db.end_session(&session_id)?;
-    println!("\nbroll: session {} ended", &session_id[..8]);
+    eprintln!("broll: session {} ended", &session_id[..8]);
 
     Ok(())
 }
