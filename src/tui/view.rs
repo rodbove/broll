@@ -50,8 +50,9 @@ pub fn run(session_id: &str) -> Result<()> {
 }
 
 fn run_loop(terminal: &mut DefaultTerminal, lines: &[Line], session_id: &str) -> Result<()> {
-    let mut scroll: u16 = 0;
-    let total_lines = lines.len() as u16;
+    let total_lines = lines.len();
+    // Paragraph::scroll() takes u16, so we track scroll as usize and cast when rendering
+    let mut scroll: usize = 0;
 
     loop {
         terminal.draw(|frame| {
@@ -59,8 +60,11 @@ fn run_loop(terminal: &mut DefaultTerminal, lines: &[Line], session_id: &str) ->
 
             let chunks = Layout::vertical([Constraint::Min(1)]).split(area);
 
-            let visible_height = chunks[0].height.saturating_sub(2); // account for borders
+            let visible_height = chunks[0].height.saturating_sub(2) as usize;
             let max_scroll = total_lines.saturating_sub(visible_height);
+
+            // Clamp scroll to valid range
+            scroll = scroll.min(max_scroll);
 
             let title = format!(" broll view — session {} ", &session_id[..8]);
             let block = Block::default()
@@ -70,13 +74,13 @@ fn run_loop(terminal: &mut DefaultTerminal, lines: &[Line], session_id: &str) ->
 
             let paragraph = Paragraph::new(lines.to_vec())
                 .block(block)
-                .scroll((scroll, 0));
+                .scroll((scroll as u16, 0));
 
             frame.render_widget(paragraph, chunks[0]);
 
             // Scrollbar
             let mut scrollbar_state =
-                ScrollbarState::new(max_scroll as usize).position(scroll as usize);
+                ScrollbarState::new(max_scroll).position(scroll);
             frame.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight),
                 chunks[0],
