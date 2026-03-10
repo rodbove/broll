@@ -12,8 +12,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Start { tag, group, no_filter, dir } => {
-            recorder::start_session(tag, group, no_filter, dir)?;
+        Command::Start { name, tag, group, no_filter, dir } => {
+            recorder::start_session(name, tag, group, no_filter, dir)?;
         }
         Command::Stop => {
             recorder::stop_session()?;

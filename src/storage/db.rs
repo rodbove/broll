@@ -40,7 +40,8 @@ impl Database {
                 grp TEXT,
                 terminal_label TEXT NOT NULL,
                 tags TEXT NOT NULL DEFAULT '[]',
-                shell TEXT NOT NULL
+                shell TEXT NOT NULL,
+                name TEXT
             );
 
             CREATE TABLE IF NOT EXISTS chunks (
@@ -65,14 +66,24 @@ impl Database {
             END;
             ",
         )?;
+
+        // Add name column to existing databases that don't have it yet
+        let has_name = self.conn
+            .prepare("SELECT name FROM pragma_table_info('sessions') WHERE name = 'name'")
+            .and_then(|mut s| s.query_row([], |_| Ok(())))
+            .is_ok();
+        if !has_name {
+            self.conn.execute_batch("ALTER TABLE sessions ADD COLUMN name TEXT")?;
+        }
+
         Ok(())
     }
 
     pub fn create_session(&self, session: &Session) -> Result<()> {
         let tags_json = serde_json::to_string(&session.tags)?;
         self.conn.execute(
-            "INSERT INTO sessions (id, started_at, ended_at, grp, terminal_label, tags, shell)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO sessions (id, started_at, ended_at, grp, terminal_label, tags, shell, name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 session.id,
                 session.started_at.to_rfc3339(),
@@ -81,6 +92,7 @@ impl Database {
                 session.terminal_label,
                 tags_json,
                 session.shell,
+                session.name,
             ],
         )?;
         Ok(())
@@ -113,12 +125,12 @@ impl Database {
         let mut sessions = Vec::new();
         let (query, param_values): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match group {
             Some(g) => (
-                "SELECT id, started_at, ended_at, grp, terminal_label, tags, shell
+                "SELECT id, started_at, ended_at, grp, terminal_label, tags, shell, name
                  FROM sessions WHERE grp = ?1 ORDER BY started_at DESC",
                 vec![Box::new(g.to_string())],
             ),
             None => (
-                "SELECT id, started_at, ended_at, grp, terminal_label, tags, shell
+                "SELECT id, started_at, ended_at, grp, terminal_label, tags, shell, name
                  FROM sessions ORDER BY started_at DESC",
                 vec![],
             ),
@@ -136,6 +148,7 @@ impl Database {
                 terminal_label: row.get(4)?,
                 tags: row.get(5)?,
                 shell: row.get(6)?,
+                name: row.get(7)?,
             })
         })?;
 
@@ -251,7 +264,7 @@ impl Database {
             let row = row?;
             let session_id = row.session_id.clone();
             let chunk = parse_chunk(row)?;
-            let session = self.get_session(&session_id)?;
+            let session = self.get_session_by_id(&session_id)?;
 
             hits.push(SearchHit { session, chunk });
         }
@@ -260,6 +273,19 @@ impl Database {
     }
 
     pub fn resolve_session_id(&self, prefix: &str) -> Result<String> {
+        // First try exact name match
+        let mut name_stmt = self
+            .conn
+            .prepare("SELECT id FROM sessions WHERE name = ?1 LIMIT 1")?;
+        let name_ids: Vec<String> = name_stmt
+            .query_map(params![prefix], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if name_ids.len() == 1 {
+            return Ok(name_ids.into_iter().next().unwrap());
+        }
+
+        // Fall back to ID prefix match
         let mut stmt = self
             .conn
             .prepare("SELECT id FROM sessions WHERE id LIKE ?1 LIMIT 2")?;
@@ -276,9 +302,9 @@ impl Database {
         }
     }
 
-    fn get_session(&self, id: &str) -> Result<Session> {
+    pub fn get_session_by_id(&self, id: &str) -> Result<Session> {
         let row = self.conn.query_row(
-            "SELECT id, started_at, ended_at, grp, terminal_label, tags, shell
+            "SELECT id, started_at, ended_at, grp, terminal_label, tags, shell, name
              FROM sessions WHERE id = ?1",
             params![id],
             |row| {
@@ -290,6 +316,7 @@ impl Database {
                     terminal_label: row.get(4)?,
                     tags: row.get(5)?,
                     shell: row.get(6)?,
+                    name: row.get(7)?,
                 })
             },
         )?;
@@ -318,6 +345,7 @@ fn parse_session(row: SessionRow) -> Result<Session> {
         tags: serde_json::from_str(&row.tags)
             .with_context(|| format!("Invalid tags JSON in session '{}'", row.id))?,
         id: row.id,
+        name: row.name,
         group: row.grp,
         terminal_label: row.terminal_label,
         shell: row.shell,
@@ -343,6 +371,7 @@ struct SessionRow {
     terminal_label: String,
     tags: String,
     shell: String,
+    name: Option<String>,
 }
 
 struct ChunkRow {

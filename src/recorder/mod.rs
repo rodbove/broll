@@ -134,6 +134,7 @@ enum CaptureState {
 
 /// Start a recording session by spawning a sub-shell in a PTY.
 pub fn start_session(
+    name: Option<String>,
     tag: Option<String>,
     group: Option<String>,
     no_filter: bool,
@@ -150,6 +151,7 @@ pub fn start_session(
 
     let session = Session {
         id: session_id.clone(),
+        name: name.clone(),
         started_at: Utc::now(),
         ended_at: None,
         group,
@@ -161,7 +163,10 @@ pub fn start_session(
     let db = Database::open()?;
     db.create_session(&session)?;
 
-    println!("broll: recording started (session {})", &session_id[..8]);
+    match &name {
+        Some(n) => println!("broll: recording started (session {} \"{}\")", &session_id[..8], n),
+        None => println!("broll: recording started (session {})", &session_id[..8]),
+    }
     println!("broll: exit the shell or run `broll stop` to end recording");
 
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));

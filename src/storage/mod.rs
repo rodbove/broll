@@ -17,13 +17,14 @@ pub fn list_sessions(group: Option<String>) -> Result<()> {
     }
 
     println!(
-        "{:<10} {:<20} {:<12} {:<10} {}",
-        "ID", "DATE", "DURATION", "GROUP", "TAGS"
+        "{:<10} {:<16} {:<20} {:<12} {:<10} {}",
+        "ID", "NAME", "DATE", "DURATION", "GROUP", "TAGS"
     );
-    println!("{}", "-".repeat(70));
+    println!("{}", "-".repeat(86));
 
     for session in sessions {
         let short_id = &session.id[..8];
+        let name = session.name.as_deref().unwrap_or("-");
         let duration = session
             .ended_at
             .map(|end| {
@@ -35,8 +36,9 @@ pub fn list_sessions(group: Option<String>) -> Result<()> {
         let tags = session.tags.join(", ");
 
         println!(
-            "{:<10} {:<20} {:<12} {:<10} {}",
+            "{:<10} {:<16} {:<20} {:<12} {:<10} {}",
             short_id,
+            name,
             session.started_at.format("%Y-%m-%d %H:%M:%S"),
             duration,
             group,

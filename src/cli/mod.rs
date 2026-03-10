@@ -12,6 +12,10 @@ pub struct Cli {
 pub enum Command {
     /// Start recording a new session (spawns a sub-shell)
     Start {
+        /// Give the session a name for easier identification and lookup
+        #[arg(short, long)]
+        name: Option<String>,
+
         /// Tag the session for easier lookup
         #[arg(short, long)]
         tag: Option<String>,
@@ -55,13 +59,13 @@ pub enum Command {
 
     /// View a recorded session (opens TUI)
     View {
-        /// Session ID (or prefix)
+        /// Session ID, prefix, or name
         id: String,
     },
 
     /// Extract commands from a session as a script
     Extract {
-        /// Session ID (or prefix)
+        /// Session ID, prefix, or name
         id: String,
 
         /// Output file (defaults to stdout)
