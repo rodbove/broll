@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>broll — Terminal Session Recorder</title>
+  <meta name="description" content="Record, search, and replay your terminal sessions. A flight recorder for your shell.">
+  <meta property="og:title" content="broll — Terminal Session Recorder">
+  <meta property="og:description" content="Record, search, and replay your terminal sessions. A flight recorder for your shell.">
+  <meta property="og:type" content="website">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --bg-card: #12121a;
+      --bg-terminal: #0d1117;
+      --border: #1e1e2e;
+      --text: #c9d1d9;
+      --text-muted: #6b7280;
+      --text-bright: #f0f6fc;
+      --accent: #22d3ee;
+      --accent-dim: #164e63;
+      --green: #4ade80;
+      --green-dim: #166534;
+      --yellow: #fbbf24;
+      --red: #f87171;
+      --purple: #a78bfa;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* --- Hero --- */
+    .hero {
+      padding: 100px 0 80px;
+      text-align: center;
+      position: relative;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, rgba(34, 211, 238, 0.06) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-badge {
+      display: inline-block;
+      padding: 6px 16px;
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+      letter-spacing: 0.5px;
+    }
+
+    .hero-badge span {
+      color: var(--accent);
+    }
+
+    h1 {
+      font-size: 56px;
+      font-weight: 700;
+      color: var(--text-bright);
+      letter-spacing: -1.5px;
+      margin-bottom: 20px;
+    }
+
+    h1 .dot {
+      color: var(--accent);
+    }
+
+    .hero p {
+      font-size: 20px;
+      color: var(--text-muted);
+      max-width: 540px;
+      margin: 0 auto 40px;
+      line-height: 1.5;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 28px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 500;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: var(--bg);
+    }
+
+    .btn-primary:hover {
+      background: #06b6d4;
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--accent-dim);
+      color: var(--text-bright);
+    }
+
+    /* --- Install snippet --- */
+    .install-snippet {
+      margin: 48px auto 0;
+      max-width: 520px;
+    }
+
+    .install-snippet code {
+      display: block;
+      background: var(--bg-terminal);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 24px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      color: var(--text);
+      text-align: left;
+      user-select: all;
+    }
+
+    .install-snippet code .prompt {
+      color: var(--green);
+      user-select: none;
+    }
+
+    /* --- Terminal demo --- */
+    .demo-section {
+      padding: 60px 0;
+    }
+
+    .terminal {
+      background: var(--bg-terminal);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    .terminal-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .terminal-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .terminal-dot.red { background: #ff5f57; }
+    .terminal-dot.yellow { background: #febc2e; }
+    .terminal-dot.green { background: #28c840; }
+
+    .terminal-title {
+      flex: 1;
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .terminal-body {
+      padding: 20px;
+      overflow-x: auto;
+    }
+
+    .terminal-body .line {
+      white-space: pre;
+    }
+
+    .terminal-body .prompt { color: var(--green); }
+    .terminal-body .cmd { color: var(--text-bright); font-weight: 500; }
+    .terminal-body .flag { color: var(--accent); }
+    .terminal-body .string { color: var(--yellow); }
+    .terminal-body .output { color: var(--text-muted); }
+    .terminal-body .comment { color: #4b5563; font-style: italic; }
+    .terminal-body .highlight { color: var(--accent); }
+    .terminal-body .time { color: #4b5563; }
+    .terminal-body .input-line { color: var(--green); font-weight: 500; }
+    .terminal-body .separator { color: #1e293b; }
+
+    /* --- Features --- */
+    .features {
+      padding: 80px 0;
+    }
+
+    .features h2 {
+      text-align: center;
+      font-size: 36px;
+      color: var(--text-bright);
+      margin-bottom: 16px;
+      letter-spacing: -0.5px;
+    }
+
+    .features .subtitle {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 17px;
+      margin-bottom: 56px;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px;
+      transition: border-color 0.2s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--accent-dim);
+    }
+
+    .feature-icon {
+      font-size: 28px;
+      margin-bottom: 16px;
+      display: block;
+    }
+
+    .feature-card h3 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-bottom: 8px;
+    }
+
+    .feature-card p {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* --- How it works --- */
+    .how-it-works {
+      padding: 80px 0;
+    }
+
+    .how-it-works h2 {
+      text-align: center;
+      font-size: 36px;
+      color: var(--text-bright);
+      margin-bottom: 48px;
+      letter-spacing: -0.5px;
+    }
+
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      max-width: 600px;
+      margin: 0 auto;
+      position: relative;
+    }
+
+    .steps::before {
+      content: '';
+      position: absolute;
+      left: 20px;
+      top: 40px;
+      bottom: 40px;
+      width: 1px;
+      background: var(--border);
+    }
+
+    .step {
+      display: flex;
+      gap: 24px;
+      align-items: flex-start;
+      padding: 20px 0;
+    }
+
+    .step-number {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--accent);
+      flex-shrink: 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    .step-content h3 {
+      font-size: 16px;
+      color: var(--text-bright);
+      margin-bottom: 4px;
+    }
+
+    .step-content p {
+      font-size: 14px;
+      color: var(--text-muted);
+    }
+
+    .step-content code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      background: var(--bg-terminal);
+      padding: 2px 8px;
+      border-radius: 4px;
+      color: var(--accent);
+    }
+
+    /* --- Footer --- */
+    footer {
+      padding: 48px 0;
+      border-top: 1px solid var(--border);
+      text-align: center;
+    }
+
+    footer p {
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      text-decoration: underline;
+    }
+
+    /* --- Responsive --- */
+    @media (max-width: 768px) {
+      h1 { font-size: 36px; }
+      .hero p { font-size: 17px; }
+      .feature-grid { grid-template-columns: 1fr; }
+      .hero { padding: 60px 0 40px; }
+    }
+
+    @media (max-width: 480px) {
+      h1 { font-size: 28px; }
+      .hero-actions { flex-direction: column; align-items: center; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-badge">Built with <span>Rust</span></div>
+      <h1>broll<span class="dot">.</span></h1>
+      <p>A flight recorder for your terminal. Record sessions, search output, extract commands.</p>
+      <div class="hero-actions">
+        <a href="https://github.com/rodbove/broll" class="btn btn-primary">
+          View on GitHub
+        </a>
+        <a href="https://github.com/rodbove/broll#installation" class="btn btn-secondary">
+          Installation
+        </a>
+      </div>
+      <div class="install-snippet">
+        <code><span class="prompt">$</span> cargo install --git https://github.com/rodbove/broll</code>
+      </div>
+    </div>
+  </section>
+
+  <!-- Demo: Recording -->
+  <section class="demo-section">
+    <div class="container">
+      <div class="terminal">
+        <div class="terminal-header">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="terminal-title">Recording a session</span>
+        </div>
+        <div class="terminal-body">
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll start</span> <span class="flag">--tag</span> <span class="string">"api-debug"</span> <span class="flag">--group</span> <span class="string">"deploy-v2"</span></div>
+<div class="line"><span class="output">broll: recording started (session a3f2b1c0)</span></div>
+<div class="line"><span class="output">broll: exit the shell or run `broll stop` to end recording</span></div>
+<div class="line"></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">curl</span> <span class="string">http://localhost:3000/health</span></div>
+<div class="line"><span class="output">{"status":"ok","uptime":"3h 22m"}</span></div>
+<div class="line"></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">docker logs</span> api-server <span class="flag">--tail</span> 5</div>
+<div class="line"><span class="output">2026-03-10T10:23:01Z INFO  request method=GET path=/health status=200</span></div>
+<div class="line"><span class="output">2026-03-10T10:23:14Z ERROR connection refused: postgres:5432</span></div>
+<div class="line"><span class="output">2026-03-10T10:23:14Z WARN  retrying database connection in 5s</span></div>
+<div class="line"></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">exit</span></div>
+<div class="line"><span class="output">broll: session a3f2b1c0 ended</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Demo: Searching -->
+  <section class="demo-section">
+    <div class="container">
+      <div class="terminal">
+        <div class="terminal-header">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="terminal-title">Searching across sessions</span>
+        </div>
+        <div class="terminal-body">
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll search</span> <span class="string">"connection refused"</span></div>
+<div class="line"></div>
+<div class="line"><span class="separator">+------------------------------------------+-----------------------------------+</span></div>
+<div class="line"><span class="separator">|</span> <span class="highlight">Results for 'connection refused' (3)</span>    <span class="separator">|</span> <span class="highlight">Preview</span>                           <span class="separator">|</span></div>
+<div class="line"><span class="separator">+------------------------------------------+-----------------------------------+</span></div>
+<div class="line"><span class="separator">|</span>                                          <span class="separator">|</span>                                   <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span> <span class="input-line">&#9654;</span> <span class="highlight">[a3f2b1c0]</span> <span class="time">2026-03-10 10:23</span>          <span class="separator">|</span> <span class="output">Session:</span> a3f2b1c0                <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>   <span class="highlight">[7e91d4f3]</span> <span class="time">2026-03-09 15:41</span>          <span class="separator">|</span> <span class="output">Time:</span> 2026-03-10 10:23:14        <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>   <span class="highlight">[c0ff3310]</span> <span class="time">2026-03-08 09:12</span>          <span class="separator">|</span> <span class="output">Group:</span> deploy-v2                 <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="separator">---</span>                               <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="output">ERROR connection refused:</span>        <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="output">  postgres:5432</span>                  <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>                                          <span class="separator">|</span>                                   <span class="separator">|</span></div>
+<div class="line"><span class="separator">+------------------------------------------+-----------------------------------+</span></div>
+<div class="line"><span class="time">  Tab switch | j/k navigate | q quit</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Demo: Extract -->
+  <section class="demo-section">
+    <div class="container">
+      <div class="terminal">
+        <div class="terminal-header">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="terminal-title">Extracting commands as a script</span>
+        </div>
+        <div class="terminal-body">
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll extract</span> a3f2 <span class="flag">--output</span> <span class="string">reproduce.sh</span></div>
+<div class="line"><span class="output">Extracted 3 commands to reproduce.sh</span></div>
+<div class="line"></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">cat</span> reproduce.sh</div>
+<div class="line"><span class="comment">#!/usr/bin/env bash</span></div>
+<div class="line"></div>
+<div class="line"><span class="cmd">curl</span> <span class="string">http://localhost:3000/health</span></div>
+<div class="line"><span class="cmd">docker logs</span> api-server <span class="flag">--tail</span> 5</div>
+<div class="line"><span class="cmd">exit</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="features">
+    <div class="container">
+      <h2>Built for power users</h2>
+      <p class="subtitle">Everything you need to never lose terminal output again.</p>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <span class="feature-icon">&#128269;</span>
+          <h3>Full-text search</h3>
+          <p>SQLite FTS5-powered search across all your recorded sessions. Find that error message from last week in seconds.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">&#128274;</span>
+          <h3>Secret filtering</h3>
+          <p>Automatically redacts passwords, tokens, AWS keys, JWTs, and database URLs before they hit disk. On by default.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">&#128196;</span>
+          <h3>Command extraction</h3>
+          <p>Pull out just the commands from any session and save them as a runnable shell script. Turn debugging into documentation.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">&#128279;</span>
+          <h3>Session groups</h3>
+          <p>Correlate multiple terminals working on the same task. Tag sessions, group them, and search across the whole context.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">&#9201;</span>
+          <h3>Timestamped output</h3>
+          <p>Every line of output is timestamped. Know exactly when that error happened, not just that it happened.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">&#128187;</span>
+          <h3>TUI interface</h3>
+          <p>Browse sessions and search results in a keyboard-driven terminal UI. Built with ratatui for a native feel.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="how-it-works">
+    <div class="container">
+      <h2>How it works</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <div class="step-content">
+            <h3>Start recording</h3>
+            <p>Run <code>broll start</code> to spawn a sub-shell inside a PTY. Everything flows through broll transparently.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <div class="step-content">
+            <h3>Work normally</h3>
+            <p>Your shell works exactly as before. Commands and output are captured with timestamps in the background.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <div class="step-content">
+            <h3>Exit to save</h3>
+            <p>Exit the shell or run <code>broll stop</code>. The session is indexed and searchable immediately.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">4</div>
+          <div class="step-content">
+            <h3>Search and extract</h3>
+            <p>Use <code>broll search</code> to find output across sessions, or <code>broll extract</code> to get commands as a script.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <p>
+        <a href="https://github.com/rodbove/broll">GitHub</a>
+        &nbsp;&middot;&nbsp;
+        MIT License
+        &nbsp;&middot;&nbsp;
+        Built with Rust
+      </p>
+    </div>
+  </footer>
+
+</body>
+</html>
