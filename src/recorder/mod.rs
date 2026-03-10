@@ -97,12 +97,14 @@ pub fn start_session(
     }
     let (tx, rx) = mpsc::channel::<StorageMsg>();
 
-    // Spawn thread to forward stdin -> PTY and capture commands
+    // Spawn thread to forward stdin -> PTY and capture commands.
+    // Uses a String buffer so backspace/ctrl-w work correctly with multibyte UTF-8.
     let input_tx = tx.clone();
     let stdin_handle = std::thread::spawn(move || {
         let mut stdin = std::io::stdin();
         let mut buf = [0u8; 1024];
-        let mut cmd_buf = Vec::new();
+        let mut cmd_buf = String::new();
+        let mut utf8_buf = Vec::new();
         loop {
             match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => break,
@@ -111,45 +113,60 @@ pub fn start_session(
                     if writer.write_all(data).is_err() {
                         break;
                     }
-                    for &byte in data {
-                        match byte {
-                            b'\r' | b'\n' => {
-                                // Enter pressed — flush the accumulated command
+                    // Accumulate bytes and decode UTF-8 as chars become complete
+                    utf8_buf.extend_from_slice(data);
+                    let text = String::from_utf8_lossy(&utf8_buf);
+                    let consumed = text.len();
+                    let chars: Vec<char> = text.chars().collect();
+
+                    // Keep any trailing incomplete UTF-8 sequence
+                    let valid_bytes = text.as_bytes().len();
+                    if valid_bytes < utf8_buf.len()
+                        && !text.ends_with('\u{FFFD}')
+                    {
+                        utf8_buf.drain(..valid_bytes);
+                    } else {
+                        utf8_buf.clear();
+                    }
+
+                    for ch in chars {
+                        if ch == '\u{FFFD}' {
+                            continue; // skip replacement chars from incomplete sequences
+                        }
+                        match ch {
+                            '\r' | '\n' => {
                                 if !cmd_buf.is_empty() {
-                                    let _ = input_tx.send(StorageMsg::Input(cmd_buf.clone()));
+                                    let _ = input_tx.send(StorageMsg::Input(
+                                        cmd_buf.as_bytes().to_vec(),
+                                    ));
                                     cmd_buf.clear();
                                 }
                             }
-                            0x7f | 0x08 => {
-                                // Backspace/delete — remove last char
+                            '\x7f' | '\x08' => {
+                                // Backspace — remove last char (works with multibyte)
                                 cmd_buf.pop();
                             }
-                            0x15 => {
+                            '\x15' => {
                                 // Ctrl-U — clear line
                                 cmd_buf.clear();
                             }
-                            0x17 => {
+                            '\x17' => {
                                 // Ctrl-W — delete last word
-                                while cmd_buf.last().is_some_and(|&b| b == b' ') {
-                                    cmd_buf.pop();
-                                }
-                                while cmd_buf.last().is_some_and(|&b| b != b' ') {
-                                    cmd_buf.pop();
-                                }
+                                let trimmed = cmd_buf.trim_end_matches(' ');
+                                let word_start = trimmed.rfind(' ').map(|i| i + 1).unwrap_or(0);
+                                cmd_buf.truncate(word_start);
                             }
-                            0x03 => {
+                            '\x03' => {
                                 // Ctrl-C — discard current input
                                 cmd_buf.clear();
                             }
-                            b if b >= 0x20 => {
-                                // Printable characters
-                                cmd_buf.push(byte);
+                            c if c >= ' ' => {
+                                cmd_buf.push(c);
                             }
-                            _ => {
-                                // Ignore other control chars (arrows, etc.)
-                            }
+                            _ => {}
                         }
                     }
+                    let _ = consumed; // suppress unused warning
                 }
             }
         }
