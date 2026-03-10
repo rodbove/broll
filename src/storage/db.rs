@@ -137,20 +137,7 @@ impl Database {
         })?;
 
         for row in rows {
-            let row = row?;
-            sessions.push(Session {
-                id: row.id,
-                started_at: DateTime::parse_from_rfc3339(&row.started_at)
-                    .unwrap()
-                    .with_timezone(&Utc),
-                ended_at: row
-                    .ended_at
-                    .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
-                group: row.grp,
-                terminal_label: row.terminal_label,
-                tags: serde_json::from_str(&row.tags).unwrap_or_default(),
-                shell: row.shell,
-            });
+            sessions.push(parse_session(row?)?);
         }
 
         Ok(sessions)
@@ -162,7 +149,8 @@ impl Database {
              FROM chunks WHERE session_id = ?1 ORDER BY id ASC",
         )?;
 
-        let chunks = stmt
+        let mut chunks = Vec::new();
+        let rows = stmt
             .query_map(params![session_id], |row| {
                 Ok(ChunkRow {
                     id: row.get(0)?,
@@ -171,18 +159,11 @@ impl Database {
                     content: row.get(3)?,
                     kind: row.get(4)?,
                 })
-            })?
-            .filter_map(|r| r.ok())
-            .map(|r| Chunk {
-                id: r.id,
-                session_id: r.session_id,
-                timestamp: DateTime::parse_from_rfc3339(&r.timestamp)
-                    .unwrap()
-                    .with_timezone(&Utc),
-                content: r.content,
-                kind: ChunkKind::from_str(&r.kind),
-            })
-            .collect();
+            })?;
+
+        for row in rows {
+            chunks.push(parse_chunk(row?)?);
+        }
 
         Ok(chunks)
     }
@@ -232,22 +213,15 @@ impl Database {
                     content: row.get(3)?,
                     kind: row.get(4)?,
                 })
-            })?
-            .filter_map(|r| r.ok());
+            })?;
 
         for row in rows {
-            let chunk = Chunk {
-                id: row.id,
-                session_id: row.session_id.clone(),
-                timestamp: DateTime::parse_from_rfc3339(&row.timestamp)
-                    .unwrap()
-                    .with_timezone(&Utc),
-                content: row.content,
-                kind: ChunkKind::from_str(&row.kind),
-            };
+            let row = row?;
+            let session_id = row.session_id.clone();
+            let chunk = parse_chunk(row)?;
 
             // Fetch session for this hit
-            let session = self.get_session(&row.session_id)?;
+            let session = self.get_session(&session_id)?;
             if let Some(ref g) = group {
                 if session.group.as_deref() != Some(g) {
                     continue;
@@ -300,20 +274,44 @@ impl Database {
             },
         )?;
 
-        Ok(Session {
-            id: row.id,
-            started_at: DateTime::parse_from_rfc3339(&row.started_at)
-                .unwrap()
-                .with_timezone(&Utc),
-            ended_at: row
-                .ended_at
-                .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
-            group: row.grp,
-            terminal_label: row.terminal_label,
-            tags: serde_json::from_str(&row.tags).unwrap_or_default(),
-            shell: row.shell,
-        })
+        parse_session(row)
     }
+}
+
+fn parse_dt(s: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .with_context(|| format!("Invalid timestamp in database: '{s}'"))
+}
+
+fn parse_dt_opt(s: &Option<String>) -> Result<Option<DateTime<Utc>>> {
+    match s {
+        Some(s) => Ok(Some(parse_dt(s)?)),
+        None => Ok(None),
+    }
+}
+
+fn parse_session(row: SessionRow) -> Result<Session> {
+    Ok(Session {
+        started_at: parse_dt(&row.started_at)?,
+        ended_at: parse_dt_opt(&row.ended_at)?,
+        tags: serde_json::from_str(&row.tags)
+            .with_context(|| format!("Invalid tags JSON in session '{}'", row.id))?,
+        id: row.id,
+        group: row.grp,
+        terminal_label: row.terminal_label,
+        shell: row.shell,
+    })
+}
+
+fn parse_chunk(row: ChunkRow) -> Result<Chunk> {
+    Ok(Chunk {
+        timestamp: parse_dt(&row.timestamp)?,
+        id: row.id,
+        session_id: row.session_id,
+        content: row.content,
+        kind: ChunkKind::from_str(&row.kind),
+    })
 }
 
 // Internal row types for SQLite mapping
