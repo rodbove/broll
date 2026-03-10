@@ -197,9 +197,19 @@ impl Database {
     ) -> Result<Vec<SearchHit>> {
         let mut hits = Vec::new();
 
+        // Add prefix wildcard to each term so "Document" matches "Documents"
+        let fts_query: String = query
+            .split_whitespace()
+            .map(|word| {
+                let clean: String = word.chars().filter(|c| *c != '"' && *c != '*').collect();
+                format!("\"{}\"*", clean)
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
         let mut where_clauses = vec!["chunks_fts MATCH ?1".to_string()];
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(query.to_string())];
+            vec![Box::new(fts_query)];
         let mut idx = 2;
 
         if let Some(g) = group {
