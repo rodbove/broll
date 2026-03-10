@@ -57,6 +57,9 @@ impl Database {
                 tokenize='unicode61'
             );
 
+            CREATE INDEX IF NOT EXISTS chunks_session_idx ON chunks(session_id);
+            CREATE INDEX IF NOT EXISTS chunks_timestamp_idx ON chunks(timestamp DESC);
+
             CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
                 INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
             END;
