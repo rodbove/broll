@@ -412,6 +412,10 @@ pub fn start_session(
 
     // Main thread: read PTY output -> stdout + send to storage
     let mut stdout = std::io::stdout();
+    // Ensure cursor is on a fresh line after the "recording started" messages,
+    // so the shell's first prompt renders correctly in raw mode.
+    let _ = stdout.write_all(b"\r\n");
+    let _ = stdout.flush();
     let mut buf = [0u8; 4096];
 
     loop {
