@@ -1,13 +1,13 @@
-# broll
+# b.roll
 
 A terminal session recorder with searchable, timestamped output. Think of it as a flight recorder for your shell — record sessions, search through output history, and extract commands as scripts.
 
-Unlike `asciinema` (video-like playback) or shell history (commands only), broll captures **both commands and output** with timestamps, stores them in a searchable SQLite database, and provides a TUI for browsing.
+Unlike `asciinema` (video-like playback) or shell history (commands only), broll captures **both commands and output** with timestamps, stores them in a searchable SQLite database, and provides a TUI for browsing. Commands are captured in real-time via shell hooks (preexec/precmd), so tab completion, arrow keys, and readline editing all work transparently.
 
 ## Features
 
-- **Record** terminal sessions via PTY sub-shell — works with any shell
-- **Search** across all recorded sessions with full-text search (SQLite FTS5)
+- **Record** terminal sessions via PTY sub-shell — works with zsh and bash
+- **Search** across all recorded sessions with prefix-matching full-text search (SQLite FTS5)
 - **View** sessions in a scrollable TUI with timestamped, color-coded output
 - **Extract** commands from any session as a runnable shell script
 - **Filter** sensitive content (passwords, tokens, AWS keys, JWTs) automatically
@@ -32,11 +32,14 @@ Requires Rust 1.85+ (edition 2024).
 ### Record a session
 
 ```bash
-# Start recording (spawns a sub-shell)
+# Start recording (spawns a sub-shell in the current directory)
 broll start
 
 # Tag and group sessions for organization
 broll start --tag "api-debug" --group "deploy-v2"
+
+# Start in a specific directory
+broll start --dir /var/log
 
 # Disable sensitive content filtering
 broll start --no-filter
@@ -85,11 +88,12 @@ broll extract a3f2 --output reproduce.sh
 
 ## How it works
 
-1. `broll start` spawns your shell inside a PTY (pseudo-terminal)
-2. Everything you type is captured as **input** chunks; all output is captured as **output** chunks
-3. Each chunk gets a timestamp and is stored in a local SQLite database with FTS5 indexing
-4. Sensitive content (env vars with secret-like names, bearer tokens, AWS keys, JWTs, DB connection strings) is redacted before storage
-5. When the shell exits, the session is finalized
+1. `broll start` spawns your shell inside a PTY (pseudo-terminal) in the current directory
+2. Shell hooks (preexec/precmd) capture commands in real-time with the exact text you typed
+3. Output is rendered through a virtual terminal (vt100) to preserve column layout and formatting
+4. Each chunk gets a timestamp and is stored in a local SQLite database with FTS5 indexing
+5. Sensitive content (env vars with secret-like names, bearer tokens, AWS keys, JWTs, DB connection strings) is redacted before storage
+6. When the shell exits, the session is finalized
 
 Data is stored locally at:
 - **macOS**: `~/Library/Application Support/broll/broll.db`
@@ -154,6 +158,7 @@ Use `--no-filter` to disable when you need to capture everything.
 - **Rust** with edition 2024
 - **ratatui** + **crossterm** for TUI
 - **portable-pty** for PTY sub-shell
+- **vt100** for virtual terminal rendering (preserves column layout)
 - **rusqlite** with bundled SQLite + FTS5 for storage and search
 - **signal-hook** for terminal resize handling
 

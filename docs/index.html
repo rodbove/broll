@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>broll — Terminal Session Recorder</title>
+  <title>b.roll — Terminal Session Recorder</title>
   <meta name="description" content="Record, search, and replay your terminal sessions. A flight recorder for your shell.">
-  <meta property="og:title" content="broll — Terminal Session Recorder">
+  <meta property="og:title" content="b.roll — Terminal Session Recorder">
   <meta property="og:description" content="Record, search, and replay your terminal sessions. A flight recorder for your shell.">
   <meta property="og:type" content="website">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -62,21 +62,6 @@
       height: 600px;
       background: radial-gradient(circle, rgba(34, 211, 238, 0.06) 0%, transparent 70%);
       pointer-events: none;
-    }
-
-    .hero-badge {
-      display: inline-block;
-      padding: 6px 16px;
-      border: 1px solid var(--border);
-      border-radius: 100px;
-      font-size: 13px;
-      color: var(--text-muted);
-      margin-bottom: 32px;
-      letter-spacing: 0.5px;
-    }
-
-    .hero-badge span {
-      color: var(--accent);
     }
 
     h1 {
@@ -400,8 +385,7 @@
   <!-- Hero -->
   <section class="hero">
     <div class="container">
-      <div class="hero-badge">Built with <span>Rust</span></div>
-      <h1>broll<span class="dot">.</span></h1>
+      <h1>b<span class="dot">.</span>roll</h1>
       <p>A flight recorder for your terminal. Record sessions, search output, extract commands.</p>
       <div class="hero-actions">
         <a href="https://github.com/rodbove/broll" class="btn btn-primary">
@@ -552,7 +536,7 @@
           <div class="step-number">1</div>
           <div class="step-content">
             <h3>Start recording</h3>
-            <p>Run <code>broll start</code> to spawn a sub-shell inside a PTY. Everything flows through broll transparently.</p>
+            <p>Run <code>broll start</code> to spawn a sub-shell inside a PTY in your current directory. Everything flows through broll transparently.</p>
           </div>
         </div>
         <div class="step">
@@ -587,8 +571,6 @@
         <a href="https://github.com/rodbove/broll">GitHub</a>
         &nbsp;&middot;&nbsp;
         MIT License
-        &nbsp;&middot;&nbsp;
-        Built with Rust
       </p>
     </div>
   </footer>
