@@ -5,7 +5,10 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
+    },
 };
 
 use crate::storage::models::SearchHit;
@@ -15,6 +18,11 @@ use crate::storage::Database;
 enum Focus {
     Results,
     Preview,
+}
+
+enum Action {
+    Quit,
+    ViewSession { session_id: String, chunk_id: i64 },
 }
 
 struct SearchApp {
@@ -81,33 +89,50 @@ pub fn run(query: String, group: Option<String>, terminal_filter: Option<String>
     }
 
     let mut terminal = ratatui::init();
-    let result = run_loop(&mut terminal, SearchApp::new(query, hits));
+    let mut app = SearchApp::new(query, hits);
+
+    let result = loop {
+        match run_loop(&mut terminal, &mut app)? {
+            Action::Quit => break Ok(()),
+            Action::ViewSession {
+                session_id,
+                chunk_id,
+            } => {
+                super::view::run_in_terminal(&mut terminal, &session_id, Some(chunk_id))?;
+            }
+        }
+    };
+
     ratatui::restore();
     result
 }
 
-fn run_loop(terminal: &mut DefaultTerminal, mut app: SearchApp) -> Result<()> {
+fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Action> {
     loop {
         terminal.draw(|frame| {
             let area = frame.area();
 
             // Split: left panel (results list) | right panel (preview)
-            let chunks = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-                .split(area);
+            let chunks =
+                Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+                    .split(area);
 
             // Left: results list
             let items: Vec<ListItem> = app
                 .hits
                 .iter()
                 .map(|hit| {
-                    let session_short = &hit.session.id[..8];
+                    let session_label = match &hit.session.name {
+                        Some(name) => name.clone(),
+                        None => hit.session.id[..8].to_string(),
+                    };
                     let time = hit.chunk.timestamp.format("%Y-%m-%d %H:%M:%S");
                     let clean = strip_ansi_escapes::strip_str(&hit.chunk.content);
                     let preview: String = clean.chars().take(60).collect();
                     let preview = preview.replace('\n', " ");
                     ListItem::new(Line::from(vec![
                         Span::styled(
-                            format!("[{session_short}] "),
+                            format!("[{session_label}] "),
                             Style::default().fg(Color::Cyan),
                         ),
                         Span::styled(format!("{time} "), Style::default().fg(Color::DarkGray)),
@@ -157,6 +182,13 @@ fn run_loop(terminal: &mut DefaultTerminal, mut app: SearchApp) -> Result<()> {
                     Span::raw(time.to_string()),
                 ]));
 
+                if let Some(ref name) = hit.session.name {
+                    lines.push(Line::from(vec![
+                        Span::styled("Name: ", Style::default().fg(Color::Yellow)),
+                        Span::raw(name.clone()),
+                    ]));
+                }
+
                 if let Some(ref group) = hit.session.group {
                     lines.push(Line::from(vec![
                         Span::styled("Group: ", Style::default().fg(Color::Yellow)),
@@ -195,7 +227,7 @@ fn run_loop(terminal: &mut DefaultTerminal, mut app: SearchApp) -> Result<()> {
                 .block(
                     Block::default()
                         .title(" Preview ")
-                        .title_bottom(" Tab switch | ↑/↓ navigate | q quit ")
+                        .title_bottom(" Tab switch | ↑/↓ navigate | Enter view | q quit ")
                         .borders(Borders::ALL)
                         .border_style(preview_border_style),
                 )
@@ -217,8 +249,16 @@ fn run_loop(terminal: &mut DefaultTerminal, mut app: SearchApp) -> Result<()> {
 
         if let Event::Key(key) = event::read()? {
             match (key.code, key.modifiers) {
-                (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => break,
-                (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => return Ok(Action::Quit),
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(Action::Quit),
+                (KeyCode::Enter, _) => {
+                    if let Some(hit) = app.selected_hit() {
+                        return Ok(Action::ViewSession {
+                            session_id: hit.session.id.clone(),
+                            chunk_id: hit.chunk.id,
+                        });
+                    }
+                }
                 (KeyCode::Tab, _) => {
                     app.focus = match app.focus {
                         Focus::Results => Focus::Preview,
@@ -241,6 +281,4 @@ fn run_loop(terminal: &mut DefaultTerminal, mut app: SearchApp) -> Result<()> {
             }
         }
     }
-
-    Ok(())
 }
