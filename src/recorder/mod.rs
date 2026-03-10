@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use std::io::{Read, Write};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -89,6 +90,10 @@ pub fn start_session(
 
     // Put terminal into raw mode (guard restores on drop, even on panic/error)
     let _raw_guard = RawModeGuard::enable()?;
+
+    // Handle terminal resize (SIGWINCH)
+    let resize_flag = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resize_flag))?;
 
     // Channels: one for PTY output, one for stdin (user input)
     enum StorageMsg {
@@ -288,6 +293,18 @@ pub fn start_session(
     let mut buf = [0u8; 4096];
 
     loop {
+        // Check for terminal resize
+        if resize_flag.swap(false, Ordering::Relaxed) {
+            if let Ok((cols, rows)) = crossterm::terminal::size() {
+                let _ = pair.master.resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
+            }
+        }
+
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
