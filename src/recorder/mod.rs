@@ -14,6 +14,7 @@ use crate::storage::Database;
 /// Marker env var so we can detect nested sessions and stop gracefully.
 const SESSION_ENV_VAR: &str = "BROLL_SESSION_ID";
 
+
 /// RAII guard that restores terminal from raw mode on drop.
 struct RawModeGuard;
 
@@ -177,22 +178,54 @@ pub fn start_session(
 
         let store_line = |line: &str, db: &Database, sid: &str, no_filt: bool| {
             let clean = strip_ansi_escapes::strip_str(line);
-            let content = if no_filt {
-                clean.to_string()
-            } else {
-                filter::redact(&clean)
-            };
-            if !content.trim().is_empty() {
-                let chunk = Chunk {
-                    id: 0,
-                    session_id: sid.to_string(),
-                    timestamp: Utc::now(),
-                    content,
-                    kind: ChunkKind::Output,
-                };
-                if let Err(e) = db.insert_chunk(&chunk) {
-                    eprintln!("broll: failed to store chunk: {e}");
+
+            // Handle carriage returns: when the shell does tab completion or
+            // redraws the prompt, it sends \r to return to line start and
+            // overwrites. We simulate this by only keeping the final segment.
+            let resolved = if clean.contains('\r') {
+                let mut result = String::new();
+                for segment in clean.split('\r') {
+                    if !segment.is_empty() {
+                        // \r means "go to column 0", so new content overwrites
+                        let overwrite_len = segment.len().min(result.len());
+                        result.replace_range(..overwrite_len, segment);
+                        if segment.len() > overwrite_len {
+                            // Segment is longer than existing content
+                            result = segment.to_string();
+                        }
+                    }
                 }
+                result
+            } else {
+                clean.to_string()
+            };
+
+            let content = if no_filt {
+                resolved
+            } else {
+                filter::redact(&resolved)
+            };
+
+            // Skip lines that are just a shell prompt character
+            let trimmed = content.trim();
+            if trimmed.is_empty()
+                || trimmed == "%"
+                || trimmed == "$"
+                || trimmed == ">"
+                || trimmed == "#"
+            {
+                return;
+            }
+
+            let chunk = Chunk {
+                id: 0,
+                session_id: sid.to_string(),
+                timestamp: Utc::now(),
+                content,
+                kind: ChunkKind::Output,
+            };
+            if let Err(e) = db.insert_chunk(&chunk) {
+                eprintln!("broll: failed to store chunk: {e}");
             }
         };
 
