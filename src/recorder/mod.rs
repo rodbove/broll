@@ -208,13 +208,36 @@ pub fn start_session(
             };
 
         /// Check if an output line is just the echo of a recent command.
+        /// The PTY echoes "prompt + command", so we check if the line ends with
+        /// a recent command and the prefix is short enough to be a prompt.
         fn is_echo(line: &str, recent_commands: &mut Vec<String>) -> bool {
             let cleaned = strip_ansi_escapes::strip_str(line);
             let trimmed = cleaned.trim();
-            if let Some(pos) = recent_commands
-                .iter()
-                .position(|cmd| trimmed.ends_with(cmd.trim()))
-            {
+            if trimmed.is_empty() {
+                return false;
+            }
+            if let Some(pos) = recent_commands.iter().position(|cmd| {
+                let cmd = cmd.trim();
+                if cmd.is_empty() {
+                    return false;
+                }
+                if trimmed == cmd {
+                    return true;
+                }
+                // Check if line is "prompt + command" where prompt is reasonably short
+                if let Some(prefix_end) = trimmed.rfind(cmd) {
+                    let prefix = trimmed[..prefix_end].trim();
+                    // Prompt is typically short (< 80 chars) and often ends with $, >, #, %
+                    prefix.len() < 80
+                        && (prefix.is_empty()
+                            || prefix.ends_with('$')
+                            || prefix.ends_with('>')
+                            || prefix.ends_with('#')
+                            || prefix.ends_with('%'))
+                } else {
+                    false
+                }
+            }) {
                 recent_commands.remove(pos);
                 return true;
             }
