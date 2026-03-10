@@ -190,43 +190,55 @@ impl Database {
         &self,
         query: &str,
         group: Option<&str>,
-        _terminal: Option<&str>,
+        terminal: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
         let mut hits = Vec::new();
 
-        let mut stmt = self.conn.prepare(
+        let mut where_clauses = vec!["chunks_fts MATCH ?1".to_string()];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
+            vec![Box::new(query.to_string())];
+        let mut idx = 2;
+
+        if let Some(g) = group {
+            where_clauses.push(format!("s.grp = ?{idx}"));
+            param_values.push(Box::new(g.to_string()));
+            idx += 1;
+        }
+
+        if let Some(t) = terminal {
+            where_clauses.push(format!("s.terminal_label = ?{idx}"));
+            param_values.push(Box::new(t.to_string()));
+        }
+
+        let sql = format!(
             "SELECT c.id, c.session_id, c.timestamp, c.content, c.kind
              FROM chunks_fts fts
              JOIN chunks c ON c.id = fts.rowid
              JOIN sessions s ON s.id = c.session_id
-             WHERE chunks_fts MATCH ?1
+             WHERE {}
              ORDER BY c.timestamp DESC
              LIMIT 100",
-        )?;
+            where_clauses.join(" AND ")
+        );
 
-        let rows = stmt
-            .query_map(params![query], |row| {
-                Ok(ChunkRow {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    timestamp: row.get(2)?,
-                    content: row.get(3)?,
-                    kind: row.get(4)?,
-                })
-            })?;
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_ref.as_slice(), |row| {
+            Ok(ChunkRow {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                timestamp: row.get(2)?,
+                content: row.get(3)?,
+                kind: row.get(4)?,
+            })
+        })?;
 
         for row in rows {
             let row = row?;
             let session_id = row.session_id.clone();
             let chunk = parse_chunk(row)?;
-
-            // Fetch session for this hit
             let session = self.get_session(&session_id)?;
-            if let Some(ref g) = group {
-                if session.group.as_deref() != Some(g) {
-                    continue;
-                }
-            }
 
             hits.push(SearchHit {
                 session,
