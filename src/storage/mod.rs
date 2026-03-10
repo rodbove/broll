@@ -5,7 +5,6 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 pub use db::Database;
-pub use models::{Chunk, Session};
 
 /// List recorded sessions, optionally filtered by group.
 pub fn list_sessions(group: Option<String>) -> Result<()> {

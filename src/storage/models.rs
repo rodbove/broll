@@ -49,6 +49,4 @@ impl ChunkKind {
 pub struct SearchHit {
     pub session: Session,
     pub chunk: Chunk,
-    pub context_before: Vec<Chunk>,
-    pub context_after: Vec<Chunk>,
 }

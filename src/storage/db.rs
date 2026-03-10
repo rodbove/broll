@@ -243,12 +243,7 @@ impl Database {
             let chunk = parse_chunk(row)?;
             let session = self.get_session(&session_id)?;
 
-            hits.push(SearchHit {
-                session,
-                chunk,
-                context_before: vec![],
-                context_after: vec![],
-            });
+            hits.push(SearchHit { session, chunk });
         }
 
         Ok(hits)
