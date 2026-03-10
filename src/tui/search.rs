@@ -5,16 +5,24 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
 use crate::storage::models::SearchHit;
 use crate::storage::Database;
 
+#[derive(PartialEq)]
+enum Focus {
+    Results,
+    Preview,
+}
+
 struct SearchApp {
     hits: Vec<SearchHit>,
     list_state: ListState,
     query: String,
+    preview_scroll: usize,
+    focus: Focus,
 }
 
 impl SearchApp {
@@ -27,6 +35,8 @@ impl SearchApp {
             hits,
             list_state,
             query,
+            preview_scroll: 0,
+            focus: Focus::Results,
         }
     }
 
@@ -44,6 +54,7 @@ impl SearchApp {
             .map(|i| (i + 1).min(self.hits.len() - 1))
             .unwrap_or(0);
         self.list_state.select(Some(i));
+        self.preview_scroll = 0;
     }
 
     fn previous(&mut self) {
@@ -56,6 +67,7 @@ impl SearchApp {
             .map(|i| i.saturating_sub(1))
             .unwrap_or(0);
         self.list_state.select(Some(i));
+        self.preview_scroll = 0;
     }
 }
 
@@ -110,11 +122,17 @@ fn run_loop(terminal: &mut DefaultTerminal, mut app: SearchApp) -> Result<()> {
                 format!("{}", app.hits.len())
             };
             let list_title = format!(" Results for '{}' ({}) ", app.query, count_display);
+            let results_border_style = if app.focus == Focus::Results {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
             let list = List::new(items)
                 .block(
                     Block::default()
                         .title(list_title)
-                        .borders(Borders::ALL),
+                        .borders(Borders::ALL)
+                        .border_style(results_border_style),
                 )
                 .highlight_style(
                     Style::default()
@@ -163,22 +181,62 @@ fn run_loop(terminal: &mut DefaultTerminal, mut app: SearchApp) -> Result<()> {
                 vec![Line::raw("No selection")]
             };
 
-            let preview = Paragraph::new(preview_content).block(
-                Block::default()
-                    .title(" Preview ")
-                    .title_bottom(" ↑/↓ navigate | q quit ")
-                    .borders(Borders::ALL),
-            );
+            let preview_total_lines = preview_content.len();
+            let preview_visible = chunks[1].height.saturating_sub(2) as usize;
+            let preview_max_scroll = preview_total_lines.saturating_sub(preview_visible);
+            app.preview_scroll = app.preview_scroll.min(preview_max_scroll);
+
+            let preview_border_style = if app.focus == Focus::Preview {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            let preview = Paragraph::new(preview_content)
+                .block(
+                    Block::default()
+                        .title(" Preview ")
+                        .title_bottom(" Tab switch | ↑/↓ navigate | q quit ")
+                        .borders(Borders::ALL)
+                        .border_style(preview_border_style),
+                )
+                .scroll((app.preview_scroll as u16, 0));
 
             frame.render_widget(preview, chunks[1]);
+
+            // Preview scrollbar
+            if preview_max_scroll > 0 {
+                let mut scrollbar_state = ScrollbarState::new(preview_max_scroll)
+                    .position(app.preview_scroll);
+                frame.render_stateful_widget(
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                    chunks[1],
+                    &mut scrollbar_state,
+                );
+            }
         })?;
 
         if let Event::Key(key) = event::read()? {
             match (key.code, key.modifiers) {
                 (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => break,
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
-                (KeyCode::Down, _) | (KeyCode::Char('j'), _) => app.next(),
-                (KeyCode::Up, _) | (KeyCode::Char('k'), _) => app.previous(),
+                (KeyCode::Tab, _) => {
+                    app.focus = match app.focus {
+                        Focus::Results => Focus::Preview,
+                        Focus::Preview => Focus::Results,
+                    };
+                }
+                (KeyCode::Down, _) | (KeyCode::Char('j'), _) => match app.focus {
+                    Focus::Results => app.next(),
+                    Focus::Preview => {
+                        app.preview_scroll = app.preview_scroll.saturating_add(1);
+                    }
+                },
+                (KeyCode::Up, _) | (KeyCode::Char('k'), _) => match app.focus {
+                    Focus::Results => app.previous(),
+                    Focus::Preview => {
+                        app.preview_scroll = app.preview_scroll.saturating_sub(1);
+                    }
+                },
                 _ => {}
             }
         }
