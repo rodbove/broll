@@ -201,7 +201,9 @@ pub fn start_session(
                         content,
                         kind,
                     };
-                    let _ = db.insert_chunk(&chunk);
+                    if let Err(e) = db.insert_chunk(&chunk) {
+                        eprintln!("broll: failed to store chunk: {e}");
+                    }
                 }
             };
 
