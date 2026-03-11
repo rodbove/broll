@@ -36,8 +36,8 @@ fn main() -> Result<()> {
         Command::Import { file } => {
             storage::import_session(&file)?;
         }
-        Command::Delete { id, force } => {
-            storage::delete_session(&id, force)?;
+        Command::Delete { ids, force } => {
+            storage::delete_sessions(&ids, force)?;
         }
         Command::View { id } => {
             tui::view::run(&id)?;

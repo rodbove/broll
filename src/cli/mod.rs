@@ -81,10 +81,11 @@ pub enum Command {
         name: String,
     },
 
-    /// Delete a recorded session and all its data
+    /// Delete one or more recorded sessions and all their data
     Delete {
-        /// Session ID, prefix, or name
-        id: String,
+        /// Session IDs, prefixes, or names
+        #[arg(required = true)]
+        ids: Vec<String>,
 
         /// Skip confirmation prompt
         #[arg(short, long, default_value_t = false)]

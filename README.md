@@ -113,6 +113,9 @@ broll rename a3f2 "deploy-postmortem"
 # Delete a session (prompts for confirmation)
 broll delete a3f2
 
+# Delete multiple sessions at once
+broll delete a3f2 7e91 c0ff
+
 # Delete without confirmation
 broll delete old-session --force
 ```
