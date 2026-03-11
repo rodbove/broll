@@ -9,7 +9,7 @@ Unlike `asciinema` (video-like playback) or shell history (commands only), broll
 - **Record** terminal sessions via PTY sub-shell — works with zsh and bash
 - **Name** sessions for easy identification and lookup later
 - **Search** across all recorded sessions with prefix-matching full-text search (SQLite FTS5)
-- **View** sessions in a scrollable TUI with timestamped, color-coded output and in-session search (`/`)
+- **View** sessions in a scrollable TUI with timestamped, color-coded output, syntax highlighting, and in-session search (`/`)
 - **Jump** from search results directly into the full session view, scrolled to the match
 - **Extract** commands from any session as a runnable shell script
 - **Filter** sensitive content (passwords, tokens, AWS keys, JWTs) automatically
@@ -17,6 +17,8 @@ Unlike `asciinema` (video-like playback) or shell history (commands only), broll
 - **Tag** sessions for easy organization and lookup
 - **Annotate** sessions with notes after the fact
 - **Rename** and **delete** sessions to keep things organized
+- **Syntax highlighting** in view mode — JSON, log levels, URLs, and file:line references are automatically color-coded
+- **Export/import** sessions as portable JSON files for sharing
 
 ## Installation
 
@@ -85,7 +87,7 @@ broll view a3f2
 broll view fix-auth
 ```
 
-The view TUI shows timestamped output with commands highlighted in green. Navigate with `j/k`, `PgUp/PgDn`, `g/G` for top/bottom. Press `/` to search within the session — matching lines are highlighted, and `n/N` jumps between matches.
+The view TUI shows timestamped output with commands highlighted in green and automatic syntax highlighting for output — JSON is color-coded (keys, strings, numbers, bools), log levels are highlighted (ERROR in red, WARN in yellow, INFO in green), and URLs and file:line references stand out. Navigate with `j/k`, `PgUp/PgDn`, `g/G` for top/bottom. Press `/` to search within the session — matching lines are highlighted, and `n/N` jumps between matches.
 
 ### Extract commands
 

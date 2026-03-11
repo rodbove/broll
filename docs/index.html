@@ -210,6 +210,17 @@
     .terminal-body .time { color: #4b5563; }
     .terminal-body .input-line { color: var(--green); font-weight: 500; }
     .terminal-body .separator { color: #1e293b; }
+    .terminal-body .json-key { color: var(--accent); }
+    .terminal-body .json-string { color: var(--yellow); }
+    .terminal-body .json-number { color: var(--purple); }
+    .terminal-body .json-bool { color: var(--red); }
+    .terminal-body .json-struct { color: #4b5563; }
+    .terminal-body .log-error { color: var(--red); font-weight: 700; }
+    .terminal-body .log-warn { color: var(--yellow); font-weight: 700; }
+    .terminal-body .log-info { color: var(--green); }
+    .terminal-body .log-debug { color: #4b5563; }
+    .terminal-body .url { color: var(--accent); }
+    .terminal-body .file-ref { color: var(--yellow); }
 
     /* --- Features --- */
     .features {
@@ -521,6 +532,34 @@
     </div>
   </section>
 
+  <!-- Demo: View with syntax highlighting -->
+  <section class="demo-section">
+    <div class="container">
+      <div class="terminal">
+        <div class="terminal-header">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="terminal-title">Viewing with syntax highlighting</span>
+        </div>
+        <div class="terminal-body">
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll view</span> api-debug</div>
+<div class="line"></div>
+<div class="line"><span class="separator">┌ broll view — api-debug (a3f2b1c0) ──────────────────────────────┐</span></div>
+<div class="line"><span class="separator">│</span> <span class="time">[10:23:01]</span> <span class="input-line">curl http://localhost:3000/health</span>                    <span class="separator">│</span></div>
+<div class="line"><span class="separator">│</span> <span class="time">[10:23:01]</span> <span class="json-struct">{</span><span class="json-key">"status"</span><span class="json-struct">:</span><span class="json-string">"ok"</span><span class="json-struct">,</span><span class="json-key">"uptime"</span><span class="json-struct">:</span><span class="json-string">"3h 22m"</span><span class="json-struct">}</span>                    <span class="separator">│</span></div>
+<div class="line"><span class="separator">│</span> <span class="time">[10:23:14]</span> <span class="input-line">docker logs api-server --tail 5</span>                     <span class="separator">│</span></div>
+<div class="line"><span class="separator">│</span> <span class="time">[10:23:14]</span> <span class="log-info">INFO</span>  request method=GET path=/health status=200      <span class="separator">│</span></div>
+<div class="line"><span class="separator">│</span> <span class="time">[10:23:14]</span> <span class="log-error">ERROR</span> connection refused: <span class="url">postgres:5432</span>              <span class="separator">│</span></div>
+<div class="line"><span class="separator">│</span> <span class="time">[10:23:14]</span> <span class="log-warn">WARN</span>  retrying database connection in 5s              <span class="separator">│</span></div>
+<div class="line"><span class="separator">│</span> <span class="time">[10:23:15]</span> <span class="log-debug">DEBUG</span> config loaded from <span class="file-ref">config/app.yaml:12</span>          <span class="separator">│</span></div>
+<div class="line"><span class="separator">│</span>                                                                  <span class="separator">│</span></div>
+<div class="line"><span class="separator">└ / search | ↑/↓ scroll | q quit ─────────────────────────────────┘</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- Features -->
   <section class="features">
     <div class="container">
@@ -551,6 +590,11 @@
           <span class="feature-icon">&#127991;</span>
           <h3>Session management</h3>
           <p>Name sessions for instant recall, add notes with <code>annotate</code>, rename them later, or delete old ones. No more remembering hex IDs.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">&#127912;</span>
+          <h3>Syntax highlighting</h3>
+          <p>Output is automatically color-coded in the viewer. JSON keys, strings, and values get distinct colors. Log levels like <code>ERROR</code>, <code>WARN</code>, and <code>INFO</code> stand out. URLs and file:line references are highlighted too.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128187;</span>

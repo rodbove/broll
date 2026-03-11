@@ -9,6 +9,7 @@ use ratatui::{
 };
 use std::collections::HashMap;
 
+use super::highlight::highlight_line;
 use crate::storage::models::{Annotation, Chunk, ChunkKind};
 use crate::storage::Database;
 
@@ -152,10 +153,10 @@ fn build_session_lines(
                 first = false;
             }
             plain_lines.push(format!("[{}] {}", timestamp, line_text));
-            lines.push(Line::from(vec![
-                Span::styled(format!("[{timestamp}] "), prefix_style),
-                Span::styled(line_text.to_string(), style),
-            ]));
+            let is_input = chunk.kind == ChunkKind::Input;
+            let mut spans = vec![Span::styled(format!("[{timestamp}] "), prefix_style)];
+            spans.extend(highlight_line(line_text, style, is_input));
+            lines.push(Line::from(spans));
         }
     }
 
