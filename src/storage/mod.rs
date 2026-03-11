@@ -49,6 +49,14 @@ pub fn list_sessions(group: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Rename a recorded session.
+pub fn rename_session(id: &str, new_name: &str) -> Result<()> {
+    let db = Database::open()?;
+    let full_id = db.rename_session(id, new_name)?;
+    println!("Renamed session {} to \"{}\"", &full_id[..8], new_name);
+    Ok(())
+}
+
 /// Extract commands from a session and write them as a shell script.
 pub fn extract_commands(id: &str, output: Option<PathBuf>) -> Result<()> {
     let db = Database::open()?;

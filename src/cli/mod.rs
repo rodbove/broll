@@ -63,6 +63,15 @@ pub enum Command {
         id: String,
     },
 
+    /// Rename a recorded session
+    Rename {
+        /// Session ID, prefix, or current name
+        id: String,
+
+        /// New name for the session
+        name: String,
+    },
+
     /// Extract commands from a session as a script
     Extract {
         /// Session ID, prefix, or name

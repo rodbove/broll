@@ -98,6 +98,15 @@ impl Database {
         Ok(())
     }
 
+    pub fn rename_session(&self, prefix: &str, new_name: &str) -> Result<String> {
+        let full_id = self.resolve_session_id(prefix)?;
+        self.conn.execute(
+            "UPDATE sessions SET name = ?1 WHERE id = ?2",
+            params![new_name, full_id],
+        )?;
+        Ok(full_id)
+    }
+
     pub fn end_session(&self, session_id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
