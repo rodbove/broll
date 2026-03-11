@@ -7,8 +7,10 @@ Unlike `asciinema` (video-like playback) or shell history (commands only), broll
 ## Features
 
 - **Record** terminal sessions via PTY sub-shell — works with zsh and bash
+- **Name** sessions for easy identification and lookup later
 - **Search** across all recorded sessions with prefix-matching full-text search (SQLite FTS5)
-- **View** sessions in a scrollable TUI with timestamped, color-coded output
+- **View** sessions in a scrollable TUI with timestamped, color-coded output and in-session search (`/`)
+- **Jump** from search results directly into the full session view, scrolled to the match
 - **Extract** commands from any session as a runnable shell script
 - **Filter** sensitive content (passwords, tokens, AWS keys, JWTs) automatically
 - **Group** sessions to correlate multiple terminals working on the same task
@@ -35,8 +37,14 @@ Requires Rust 1.85+ (edition 2024).
 # Start recording (spawns a sub-shell in the current directory)
 broll start
 
+# Name the session for easy identification and lookup
+broll start --name "api-debug-march"
+
 # Tag and group sessions for organization
 broll start --tag "api-debug" --group "deploy-v2"
+
+# Combine name, tag, and group
+broll start --name "fix-auth" --tag "server" --group "debug-auth"
 
 # Start in a specific directory
 broll start --dir /var/log
@@ -59,7 +67,7 @@ broll search "error" --group deploy-v2
 broll search "panic" --terminal term-a3f2
 ```
 
-The search TUI has two panels — results list on the left, preview on the right. Press `Tab` to switch focus between panels, `j/k` or arrows to navigate.
+The search TUI has two panels — results list on the left, preview on the right. Press `Tab` to switch focus between panels, `j/k` or arrows to navigate. Press `Enter` on any result to open the full session in view mode, scrolled to the matching output with it highlighted. Press `Esc` to return to search results.
 
 ### View a session
 
@@ -70,17 +78,19 @@ broll list
 # List sessions in a group
 broll list --group deploy-v2
 
-# View a session (use ID prefix)
+# View a session by ID prefix or name
 broll view a3f2
+broll view fix-auth
 ```
 
-The view TUI shows timestamped output with commands highlighted in green. Navigate with `j/k`, `PgUp/PgDn`, `g/G` for top/bottom.
+The view TUI shows timestamped output with commands highlighted in green. Navigate with `j/k`, `PgUp/PgDn`, `g/G` for top/bottom. Press `/` to search within the session — matching lines are highlighted, and `n/N` jumps between matches.
 
 ### Extract commands
 
 ```bash
-# Print commands to stdout
+# Print commands to stdout (by ID prefix or name)
 broll extract a3f2
+broll extract fix-auth
 
 # Save as a script
 broll extract a3f2 --output reproduce.sh
@@ -142,7 +152,10 @@ Use `--no-filter` to disable when you need to capture everything.
 | `Ctrl-u` / `PgUp` | Page up |
 | `g` / `Home` | Go to top |
 | `G` / `End` | Go to bottom |
-| `q` / `Esc` | Quit |
+| `/` | Search within session |
+| `n` | Next search match |
+| `N` | Previous search match |
+| `q` / `Esc` | Quit (or go back to search) |
 
 ### Search TUI
 
@@ -151,6 +164,7 @@ Use `--no-filter` to disable when you need to capture everything.
 | `Tab` | Switch focus (results / preview) |
 | `j` / `Down` | Navigate results or scroll preview |
 | `k` / `Up` | Navigate results or scroll preview |
+| `Enter` | Open full session view at match |
 | `q` / `Esc` | Quit |
 
 ## Tech stack

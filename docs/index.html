@@ -412,8 +412,8 @@
           <span class="terminal-title">Recording a session</span>
         </div>
         <div class="terminal-body">
-<div class="line"><span class="prompt">$</span> <span class="cmd">broll start</span> <span class="flag">--tag</span> <span class="string">"api-debug"</span> <span class="flag">--group</span> <span class="string">"deploy-v2"</span></div>
-<div class="line"><span class="output">broll: recording started (session a3f2b1c0)</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll start</span> <span class="flag">--name</span> <span class="string">"api-debug"</span> <span class="flag">--group</span> <span class="string">"deploy-v2"</span></div>
+<div class="line"><span class="output">broll: recording started (session a3f2b1c0 "api-debug")</span></div>
 <div class="line"><span class="output">broll: exit the shell or run `broll stop` to end recording</span></div>
 <div class="line"></div>
 <div class="line"><span class="prompt">$</span> <span class="cmd">curl</span> <span class="string">http://localhost:3000/health</span></div>
@@ -448,15 +448,16 @@
 <div class="line"><span class="separator">|</span> <span class="highlight">Results for 'connection refused' (3)</span>    <span class="separator">|</span> <span class="highlight">Preview</span>                           <span class="separator">|</span></div>
 <div class="line"><span class="separator">+------------------------------------------+-----------------------------------+</span></div>
 <div class="line"><span class="separator">|</span>                                          <span class="separator">|</span>                                   <span class="separator">|</span></div>
-<div class="line"><span class="separator">|</span> <span class="input-line">&#9654;</span> <span class="highlight">[a3f2b1c0]</span> <span class="time">2026-03-10 10:23</span>          <span class="separator">|</span> <span class="output">Session:</span> a3f2b1c0                <span class="separator">|</span></div>
-<div class="line"><span class="separator">|</span>   <span class="highlight">[7e91d4f3]</span> <span class="time">2026-03-09 15:41</span>          <span class="separator">|</span> <span class="output">Time:</span> 2026-03-10 10:23:14        <span class="separator">|</span></div>
-<div class="line"><span class="separator">|</span>   <span class="highlight">[c0ff3310]</span> <span class="time">2026-03-08 09:12</span>          <span class="separator">|</span> <span class="output">Group:</span> deploy-v2                 <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span> <span class="input-line">&#9654;</span> <span class="highlight">[api-debug]</span> <span class="time">2026-03-10 10:23</span>         <span class="separator">|</span> <span class="output">Session:</span> a3f2b1c0                <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>   <span class="highlight">[7e91d4f3]</span> <span class="time">2026-03-09 15:41</span>          <span class="separator">|</span> <span class="output">Name:</span> api-debug                  <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>   <span class="highlight">[c0ff3310]</span> <span class="time">2026-03-08 09:12</span>          <span class="separator">|</span> <span class="output">Time:</span> 2026-03-10 10:23:14        <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="output">Group:</span> deploy-v2                 <span class="separator">|</span></div>
 <div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="separator">---</span>                               <span class="separator">|</span></div>
 <div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="output">ERROR connection refused:</span>        <span class="separator">|</span></div>
 <div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="output">  postgres:5432</span>                  <span class="separator">|</span></div>
 <div class="line"><span class="separator">|</span>                                          <span class="separator">|</span>                                   <span class="separator">|</span></div>
 <div class="line"><span class="separator">+------------------------------------------+-----------------------------------+</span></div>
-<div class="line"><span class="time">  Tab switch | j/k navigate | q quit</span></div>
+<div class="line"><span class="time">  Tab switch | j/k navigate | Enter view | q quit</span></div>
         </div>
       </div>
     </div>
@@ -473,7 +474,7 @@
           <span class="terminal-title">Extracting commands as a script</span>
         </div>
         <div class="terminal-body">
-<div class="line"><span class="prompt">$</span> <span class="cmd">broll extract</span> a3f2 <span class="flag">--output</span> <span class="string">reproduce.sh</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll extract</span> api-debug <span class="flag">--output</span> <span class="string">reproduce.sh</span></div>
 <div class="line"><span class="output">Extracted 3 commands to reproduce.sh</span></div>
 <div class="line"></div>
 <div class="line"><span class="prompt">$</span> <span class="cmd">cat</span> reproduce.sh</div>
@@ -514,14 +515,14 @@
           <p>Correlate multiple terminals working on the same task. Tag sessions, group them, and search across the whole context.</p>
         </div>
         <div class="feature-card">
-          <span class="feature-icon">&#9201;</span>
-          <h3>Timestamped output</h3>
-          <p>Every line of output is timestamped. Know exactly when that error happened, not just that it happened.</p>
+          <span class="feature-icon">&#127991;</span>
+          <h3>Named sessions</h3>
+          <p>Name sessions for instant recall. Use <code>broll view fix-auth</code> instead of remembering hex IDs. Names show up in search results too.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128187;</span>
           <h3>TUI interface</h3>
-          <p>Browse sessions and search results in a keyboard-driven terminal UI. Built with ratatui for a native feel.</p>
+          <p>Browse sessions and search results in a keyboard-driven TUI. Search within sessions with <code>/</code>, jump from search results into full session view with Enter.</p>
         </div>
       </div>
     </div>
