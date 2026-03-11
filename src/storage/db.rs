@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
 
-use super::models::{Annotation, Chunk, ChunkKind, SearchHit, Session};
+use super::models::{Annotation, Chunk, ChunkKind, SearchHit, Session, SessionExport};
 
 pub struct Database {
     conn: Connection,
@@ -174,6 +174,53 @@ impl Database {
             });
         }
         Ok(annotations)
+    }
+
+    pub fn export_session(&self, prefix: &str) -> Result<SessionExport> {
+        let full_id = self.resolve_session_id(prefix)?;
+        let session = self.get_session_by_id(&full_id)?;
+        let chunks = self.get_session_chunks(&full_id)?;
+        let annotations = self.get_annotations(&full_id)?;
+
+        Ok(SessionExport {
+            version: 1,
+            session,
+            chunks,
+            annotations,
+        })
+    }
+
+    pub fn import_session(&self, export: &SessionExport) -> Result<()> {
+        // Check if session already exists
+        let exists = self
+            .conn
+            .prepare("SELECT 1 FROM sessions WHERE id = ?1")?
+            .exists(params![export.session.id])?;
+        if exists {
+            anyhow::bail!(
+                "Session {} already exists in the database",
+                &export.session.id[..8]
+            );
+        }
+
+        self.create_session(&export.session)?;
+
+        for chunk in &export.chunks {
+            self.insert_chunk(chunk)?;
+        }
+
+        for ann in &export.annotations {
+            self.conn.execute(
+                "INSERT INTO annotations (session_id, created_at, content) VALUES (?1, ?2, ?3)",
+                params![
+                    ann.session_id,
+                    ann.created_at.to_rfc3339(),
+                    ann.content,
+                ],
+            )?;
+        }
+
+        Ok(())
     }
 
     pub fn end_session(&self, session_id: &str) -> Result<()> {

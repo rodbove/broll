@@ -1,7 +1,7 @@
 pub mod db;
 pub mod models;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 pub use db::Database;
@@ -91,6 +91,61 @@ pub fn delete_session(id: &str, force: bool) -> Result<()> {
         .as_deref()
         .unwrap_or(&full_id[..8]);
     println!("Deleted session {}", label);
+    Ok(())
+}
+
+/// Export a session as a portable JSON file.
+pub fn export_session(id: &str, output: Option<PathBuf>) -> Result<()> {
+    let db = Database::open()?;
+    let export = db.export_session(id)?;
+    let json = serde_json::to_string_pretty(&export)?;
+
+    let label = export
+        .session
+        .name
+        .as_deref()
+        .unwrap_or(&export.session.id[..8]);
+
+    match output {
+        Some(path) => {
+            std::fs::write(&path, &json)?;
+            println!(
+                "Exported session {} to {} ({} chunks, {} notes)",
+                label,
+                path.display(),
+                export.chunks.len(),
+                export.annotations.len(),
+            );
+        }
+        None => print!("{json}"),
+    }
+
+    Ok(())
+}
+
+/// Import a session from a JSON file.
+pub fn import_session(file: &std::path::Path) -> Result<()> {
+    let content = std::fs::read_to_string(file)
+        .with_context(|| format!("Failed to read {}", file.display()))?;
+    let export: models::SessionExport = serde_json::from_str(&content)
+        .with_context(|| format!("Invalid session JSON in {}", file.display()))?;
+
+    let label = export
+        .session
+        .name
+        .clone()
+        .unwrap_or_else(|| export.session.id[..8].to_string());
+
+    let db = Database::open()?;
+    db.import_session(&export)?;
+
+    println!(
+        "Imported session {} ({} chunks, {} notes)",
+        label,
+        export.chunks.len(),
+        export.annotations.len(),
+    );
+
     Ok(())
 }
 

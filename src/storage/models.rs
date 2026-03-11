@@ -46,12 +46,21 @@ impl ChunkKind {
 }
 
 /// A user-added note attached to a session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Annotation {
     pub id: i64,
     pub session_id: String,
     pub created_at: DateTime<Utc>,
     pub content: String,
+}
+
+/// Portable representation of a full session for export/import.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionExport {
+    pub version: u32,
+    pub session: Session,
+    pub chunks: Vec<Chunk>,
+    pub annotations: Vec<Annotation>,
 }
 
 /// A search result pointing to a specific chunk with context.

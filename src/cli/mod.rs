@@ -91,6 +91,22 @@ pub enum Command {
         force: bool,
     },
 
+    /// Export a session as a portable JSON file
+    Export {
+        /// Session ID, prefix, or name
+        id: String,
+
+        /// Output file (defaults to stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Import a session from a JSON file
+    Import {
+        /// Path to the JSON file to import
+        file: PathBuf,
+    },
+
     /// Extract commands from a session as a script
     Extract {
         /// Session ID, prefix, or name

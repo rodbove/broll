@@ -30,6 +30,12 @@ fn main() -> Result<()> {
         Command::Rename { id, name } => {
             storage::rename_session(&id, &name)?;
         }
+        Command::Export { id, output } => {
+            storage::export_session(&id, output)?;
+        }
+        Command::Import { file } => {
+            storage::import_session(&file)?;
+        }
         Command::Delete { id, force } => {
             storage::delete_session(&id, force)?;
         }
