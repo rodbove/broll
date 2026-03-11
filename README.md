@@ -15,6 +15,8 @@ Unlike `asciinema` (video-like playback) or shell history (commands only), broll
 - **Filter** sensitive content (passwords, tokens, AWS keys, JWTs) automatically
 - **Group** sessions to correlate multiple terminals working on the same task
 - **Tag** sessions for easy organization and lookup
+- **Annotate** sessions with notes after the fact
+- **Rename** and **delete** sessions to keep things organized
 
 ## Installation
 
@@ -95,6 +97,25 @@ broll extract fix-auth
 # Save as a script
 broll extract a3f2 --output reproduce.sh
 ```
+
+### Manage sessions
+
+```bash
+# Add a note to a session
+broll annotate a3f2 "root cause: postgres wasn't running"
+broll annotate fix-auth "resolved by rotating JWT signing key"
+
+# Rename a session
+broll rename a3f2 "deploy-postmortem"
+
+# Delete a session (prompts for confirmation)
+broll delete a3f2
+
+# Delete without confirmation
+broll delete old-session --force
+```
+
+Notes are displayed at the top of the view TUI in a distinct colored section.
 
 ## How it works
 

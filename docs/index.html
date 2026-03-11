@@ -268,6 +268,15 @@
       line-height: 1.5;
     }
 
+    .feature-card code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: var(--bg-terminal);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--accent);
+    }
+
     /* --- How it works --- */
     .how-it-works {
       padding: 80px 0;
@@ -386,7 +395,7 @@
   <section class="hero">
     <div class="container">
       <h1>b<span class="dot">.</span>roll</h1>
-      <p>A flight recorder for your terminal. Record sessions, search output, extract commands.</p>
+      <p>A flight recorder for your terminal. Record sessions, search output, annotate findings, extract commands.</p>
       <div class="hero-actions">
         <a href="https://github.com/rodbove/broll" class="btn btn-primary">
           View on GitHub
@@ -450,9 +459,8 @@
 <div class="line"><span class="separator">|</span>                                          <span class="separator">|</span>                                   <span class="separator">|</span></div>
 <div class="line"><span class="separator">|</span> <span class="input-line">&#9654;</span> <span class="highlight">[api-debug]</span> <span class="time">2026-03-10 10:23</span>         <span class="separator">|</span> <span class="output">Session:</span> a3f2b1c0                <span class="separator">|</span></div>
 <div class="line"><span class="separator">|</span>   <span class="highlight">[7e91d4f3]</span> <span class="time">2026-03-09 15:41</span>          <span class="separator">|</span> <span class="output">Name:</span> api-debug                  <span class="separator">|</span></div>
-<div class="line"><span class="separator">|</span>   <span class="highlight">[c0ff3310]</span> <span class="time">2026-03-08 09:12</span>          <span class="separator">|</span> <span class="output">Time:</span> 2026-03-10 10:23:14        <span class="separator">|</span></div>
-<div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="output">Group:</span> deploy-v2                 <span class="separator">|</span></div>
-<div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="separator">---</span>                               <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>   <span class="highlight">[c0ff3310]</span> <span class="time">2026-03-08 09:12</span>          <span class="separator">|</span> <span class="output">Group:</span> deploy-v2                 <span class="separator">|</span></div>
+<div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="separator">───────────────────────────────</span> <span class="separator">|</span></div>
 <div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="output">ERROR connection refused:</span>        <span class="separator">|</span></div>
 <div class="line"><span class="separator">|</span>                                          <span class="separator">|</span> <span class="output">  postgres:5432</span>                  <span class="separator">|</span></div>
 <div class="line"><span class="separator">|</span>                                          <span class="separator">|</span>                                   <span class="separator">|</span></div>
@@ -488,6 +496,31 @@
     </div>
   </section>
 
+  <!-- Demo: Managing sessions -->
+  <section class="demo-section">
+    <div class="container">
+      <div class="terminal">
+        <div class="terminal-header">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="terminal-title">Managing sessions</span>
+        </div>
+        <div class="terminal-body">
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll annotate</span> api-debug <span class="string">"root cause: postgres wasn't running"</span></div>
+<div class="line"><span class="output">Added note to session a3f2b1c0</span></div>
+<div class="line"></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll rename</span> api-debug <span class="string">"deploy-postmortem"</span></div>
+<div class="line"><span class="output">Renamed session a3f2b1c0 to "deploy-postmortem"</span></div>
+<div class="line"></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll delete</span> c0ff3310</div>
+<div class="line"><span class="output">Delete session c0ff3310 ? [y/N]</span> <span class="cmd">y</span></div>
+<div class="line"><span class="output">Deleted session c0ff3310</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- Features -->
   <section class="features">
     <div class="container">
@@ -516,8 +549,8 @@
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#127991;</span>
-          <h3>Named sessions</h3>
-          <p>Name sessions for instant recall. Use <code>broll view fix-auth</code> instead of remembering hex IDs. Names show up in search results too.</p>
+          <h3>Session management</h3>
+          <p>Name sessions for instant recall, add notes with <code>annotate</code>, rename them later, or delete old ones. No more remembering hex IDs.</p>
         </div>
         <div class="feature-card">
           <span class="feature-icon">&#128187;</span>
