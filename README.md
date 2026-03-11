@@ -22,6 +22,12 @@ Unlike `asciinema` (video-like playback) or shell history (commands only), broll
 
 ## Installation
 
+### From crates.io
+
+```bash
+cargo install broll
+```
+
 ### From source
 
 ```bash
