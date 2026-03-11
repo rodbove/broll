@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 description = "Terminal session recorder with searchable, timestamped output"
 license = "MIT"
+repository = "https://github.com/rodbove/broll"
+homepage = "https://github.com/rodbove/broll"
+readme = "README.md"
+keywords = ["terminal", "recorder", "tui", "shell", "session"]
+categories = ["command-line-utilities"]
+exclude = ["docs/", "test-samples/", "IDEAS.md", "install-local.sh", "CLAUDE.md"]
 
 [dependencies]
 # CLI
