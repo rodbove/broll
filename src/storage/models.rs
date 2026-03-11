@@ -45,6 +45,15 @@ impl ChunkKind {
     }
 }
 
+/// A user-added note attached to a session.
+#[derive(Debug, Clone)]
+pub struct Annotation {
+    pub id: i64,
+    pub session_id: String,
+    pub created_at: DateTime<Utc>,
+    pub content: String,
+}
+
 /// A search result pointing to a specific chunk with context.
 #[derive(Debug, Clone)]
 pub struct SearchHit {

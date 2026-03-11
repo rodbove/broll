@@ -63,6 +63,15 @@ pub enum Command {
         id: String,
     },
 
+    /// Add a note to a recorded session
+    Annotate {
+        /// Session ID, prefix, or name
+        id: String,
+
+        /// Note text to attach
+        note: String,
+    },
+
     /// Rename a recorded session
     Rename {
         /// Session ID, prefix, or current name

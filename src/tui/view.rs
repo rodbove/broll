@@ -9,7 +9,7 @@ use ratatui::{
 };
 use std::collections::HashMap;
 
-use crate::storage::models::{Chunk, ChunkKind};
+use crate::storage::models::{Annotation, Chunk, ChunkKind};
 use crate::storage::Database;
 
 #[derive(PartialEq)]
@@ -91,6 +91,7 @@ impl ViewApp {
 
 fn build_session_lines(
     chunks: &[Chunk],
+    annotations: &[Annotation],
 ) -> (
     Vec<Line<'static>>,
     Vec<String>,
@@ -99,6 +100,38 @@ fn build_session_lines(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut plain_lines: Vec<String> = Vec::new();
     let mut chunk_line_map: HashMap<i64, usize> = HashMap::new();
+
+    if !annotations.is_empty() {
+        let note_style = Style::default().fg(Color::Magenta);
+        let label_style = Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD);
+        let dim_style = Style::default().fg(Color::DarkGray);
+
+        lines.push(Line::styled("── Notes ──", label_style));
+        plain_lines.push("── Notes ──".to_string());
+
+        for ann in annotations {
+            let time = ann.created_at.format("%Y-%m-%d %H:%M").to_string();
+            let text = format!("[{}] {}", time, ann.content);
+            plain_lines.push(text);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("[{}] ", time),
+                    dim_style,
+                ),
+                Span::styled(ann.content.clone(), note_style),
+            ]));
+        }
+
+        lines.push(Line::styled(
+            "─".repeat(40),
+            dim_style,
+        ));
+        plain_lines.push("─".repeat(40));
+        lines.push(Line::raw(""));
+        plain_lines.push(String::new());
+    }
 
     for chunk in chunks {
         let timestamp = chunk.timestamp.format("%H:%M:%S").to_string();
@@ -145,7 +178,8 @@ pub fn run(session_id: &str) -> Result<()> {
         None => format!(" broll view — session {} ", &full_id[..8]),
     };
 
-    let (lines, plain_lines, _) = build_session_lines(&chunks);
+    let annotations = db.get_annotations(&full_id)?;
+    let (lines, plain_lines, _) = build_session_lines(&chunks, &annotations);
     let mut app = ViewApp {
         lines,
         plain_lines,
@@ -185,7 +219,8 @@ pub fn run_in_terminal(
         None => format!(" broll view — session {} ", &full_id[..8]),
     };
 
-    let (lines, plain_lines, chunk_line_map) = build_session_lines(&chunks);
+    let annotations = db.get_annotations(&full_id)?;
+    let (lines, plain_lines, chunk_line_map) = build_session_lines(&chunks, &annotations);
     let initial_scroll = scroll_to_chunk
         .and_then(|cid| chunk_line_map.get(&cid).copied())
         .unwrap_or(0);

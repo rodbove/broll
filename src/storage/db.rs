@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
 
-use super::models::{Chunk, ChunkKind, SearchHit, Session};
+use super::models::{Annotation, Chunk, ChunkKind, SearchHit, Session};
 
 pub struct Database {
     conn: Connection,
@@ -64,6 +64,13 @@ impl Database {
             CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
                 INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
             END;
+
+            CREATE TABLE IF NOT EXISTS annotations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                created_at TEXT NOT NULL,
+                content TEXT NOT NULL
+            );
             ",
         )?;
 
@@ -105,6 +112,43 @@ impl Database {
             params![new_name, full_id],
         )?;
         Ok(full_id)
+    }
+
+    pub fn add_annotation(&self, prefix: &str, content: &str) -> Result<String> {
+        let full_id = self.resolve_session_id(prefix)?;
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO annotations (session_id, created_at, content) VALUES (?1, ?2, ?3)",
+            params![full_id, now, content],
+        )?;
+        Ok(full_id)
+    }
+
+    pub fn get_annotations(&self, session_id: &str) -> Result<Vec<Annotation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, created_at, content
+             FROM annotations WHERE session_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+
+        let mut annotations = Vec::new();
+        for row in rows {
+            let (id, session_id, created_at, content) = row?;
+            annotations.push(Annotation {
+                id,
+                session_id,
+                created_at: parse_dt(&created_at)?,
+                content,
+            });
+        }
+        Ok(annotations)
     }
 
     pub fn end_session(&self, session_id: &str) -> Result<()> {

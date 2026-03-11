@@ -49,6 +49,14 @@ pub fn list_sessions(group: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Add a note to a recorded session.
+pub fn annotate_session(id: &str, note: &str) -> Result<()> {
+    let db = Database::open()?;
+    let full_id = db.add_annotation(id, note)?;
+    println!("Added note to session {}", &full_id[..8]);
+    Ok(())
+}
+
 /// Rename a recorded session.
 pub fn rename_session(id: &str, new_name: &str) -> Result<()> {
     let db = Database::open()?;
