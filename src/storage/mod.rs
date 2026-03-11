@@ -65,6 +65,35 @@ pub fn rename_session(id: &str, new_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Delete a recorded session and all its data.
+pub fn delete_session(id: &str, force: bool) -> Result<()> {
+    let db = Database::open()?;
+
+    if !force {
+        // Resolve first to show the user what they're deleting
+        let full_id = db.resolve_session_id(id)?;
+        let session = db.get_session_by_id(&full_id)?;
+        let label = session
+            .name
+            .as_deref()
+            .unwrap_or(&full_id[..8]);
+        eprint!("Delete session {} ? [y/N] ", label);
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    let (full_id, name) = db.delete_session(id)?;
+    let label = name
+        .as_deref()
+        .unwrap_or(&full_id[..8]);
+    println!("Deleted session {}", label);
+    Ok(())
+}
+
 /// Extract commands from a session and write them as a shell script.
 pub fn extract_commands(id: &str, output: Option<PathBuf>) -> Result<()> {
     let db = Database::open()?;

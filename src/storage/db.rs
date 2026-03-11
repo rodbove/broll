@@ -114,6 +114,31 @@ impl Database {
         Ok(full_id)
     }
 
+    pub fn delete_session(&self, prefix: &str) -> Result<(String, Option<String>)> {
+        let full_id = self.resolve_session_id(prefix)?;
+        let session = self.get_session_by_id(&full_id)?;
+
+        // Delete FTS entries for this session's chunks
+        self.conn.execute(
+            "DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE session_id = ?1)",
+            params![full_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM annotations WHERE session_id = ?1",
+            params![full_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM chunks WHERE session_id = ?1",
+            params![full_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM sessions WHERE id = ?1",
+            params![full_id],
+        )?;
+
+        Ok((full_id, session.name))
+    }
+
     pub fn add_annotation(&self, prefix: &str, content: &str) -> Result<String> {
         let full_id = self.resolve_session_id(prefix)?;
         let now = Utc::now().to_rfc3339();

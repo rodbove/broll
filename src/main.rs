@@ -30,6 +30,9 @@ fn main() -> Result<()> {
         Command::Rename { id, name } => {
             storage::rename_session(&id, &name)?;
         }
+        Command::Delete { id, force } => {
+            storage::delete_session(&id, force)?;
+        }
         Command::View { id } => {
             tui::view::run(&id)?;
         }

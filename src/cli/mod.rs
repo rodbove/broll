@@ -81,6 +81,16 @@ pub enum Command {
         name: String,
     },
 
+    /// Delete a recorded session and all its data
+    Delete {
+        /// Session ID, prefix, or name
+        id: String,
+
+        /// Skip confirmation prompt
+        #[arg(short, long, default_value_t = false)]
+        force: bool,
+    },
+
     /// Extract commands from a session as a script
     Extract {
         /// Session ID, prefix, or name
