@@ -66,6 +66,13 @@ broll start --no-filter
 broll stop
 ```
 
+When recording, the terminal tab title changes to show `broll recording - <name>` and a `BROLL_SESSION` environment variable is set inside the sub-shell. You can optionally add it to your prompt:
+
+```bash
+# Add to ~/.zshrc or ~/.bashrc
+PS1="${BROLL_SESSION:+[rec: $BROLL_SESSION] }$PS1"
+```
+
 ### Search output
 
 ```bash

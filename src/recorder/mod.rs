@@ -163,11 +163,18 @@ pub fn start_session(
     let db = Database::open()?;
     db.create_session(&session)?;
 
-    match &name {
-        Some(n) => println!("broll: recording started (session {} \"{}\")", &session_id[..8], n),
-        None => println!("broll: recording started (session {})", &session_id[..8]),
-    }
-    println!("broll: exit the shell or run `broll stop` to end recording");
+    // Session label for display
+    let session_label = name.as_deref().unwrap_or(&session_id[..8]);
+
+    // Set terminal title to indicate recording
+    eprint!("\x1b]0;broll recording - {}\x1b\\", session_label);
+
+    // Styled recording banner
+    eprintln!(
+        "\x1b[48;5;52m\x1b[97;1m broll recording - {} \x1b[0m",
+        session_label,
+    );
+    eprintln!("\x1b[2m  exit the shell or run `broll stop` to end recording\x1b[0m");
 
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
 
@@ -189,6 +196,7 @@ pub fn start_session(
 
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env(SESSION_ENV_VAR, &session_id);
+    cmd.env("BROLL_SESSION", session_label);
 
     // Set working directory (defaults to current directory)
     let work_dir = dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
@@ -484,6 +492,10 @@ pub fn start_session(
     let _ = storage_handle.join();
 
     db.end_session(&session_id)?;
+
+    // Restore terminal title
+    eprint!("\x1b]0;\x1b\\");
+
     eprintln!("broll: session {} ended", &session_id[..8]);
 
     Ok(())
