@@ -10,7 +10,9 @@ use ratatui::{
         ScrollbarState,
     },
 };
+use std::time::Instant;
 
+use super::clipboard;
 use crate::storage::models::SearchHit;
 use crate::storage::Database;
 
@@ -31,6 +33,8 @@ struct SearchApp {
     query: String,
     preview_scroll: usize,
     focus: Focus,
+    pending_y: bool,
+    status_message: Option<(String, Instant)>,
 }
 
 impl SearchApp {
@@ -45,6 +49,8 @@ impl SearchApp {
             query,
             preview_scroll: 0,
             focus: Focus::Results,
+            pending_y: false,
+            status_message: None,
         }
     }
 
@@ -109,13 +115,27 @@ pub fn run(query: String, group: Option<String>, terminal_filter: Option<String>
 
 fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Action> {
     loop {
+        // Expire status message after 3 seconds
+        if let Some((_, when)) = &app.status_message {
+            if when.elapsed().as_secs() >= 3 {
+                app.status_message = None;
+            }
+        }
+
         terminal.draw(|frame| {
             let area = frame.area();
+
+            let has_status = app.status_message.is_some();
+            let outer = if has_status {
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area)
+            } else {
+                Layout::vertical([Constraint::Min(1)]).split(area)
+            };
 
             // Split: left panel (results list) | right panel (preview)
             let chunks =
                 Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-                    .split(area);
+                    .split(outer[0]);
 
             // Left: results list
             let items: Vec<ListItem> = app
@@ -227,7 +247,7 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                 .block(
                     Block::default()
                         .title(" Preview ")
-                        .title_bottom(" Tab switch | ↑/↓ navigate | Enter view | q quit ")
+                        .title_bottom(" Tab | ↑/↓ nav | Enter view | yy/Y yank | q quit ")
                         .borders(Borders::ALL)
                         .border_style(preview_border_style),
                 )
@@ -245,9 +265,36 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                     &mut scrollbar_state,
                 );
             }
+
+            // Status message
+            if has_status {
+                if let Some((ref msg, _)) = app.status_message {
+                    let status_line = Line::from(Span::styled(
+                        format!(" {msg}"),
+                        Style::default().fg(Color::Green),
+                    ));
+                    frame.render_widget(Paragraph::new(status_line), outer[1]);
+                }
+            }
         })?;
 
         if let Event::Key(key) = event::read()? {
+            // Handle pending 'y' for yy combo
+            if app.pending_y {
+                app.pending_y = false;
+                if key.code == KeyCode::Char('y') {
+                    // yy: yank first line of selected result
+                    if let Some(hit) = app.selected_hit() {
+                        let clean = strip_ansi_escapes::strip_str(&hit.chunk.content);
+                        let first_line = clean.lines().next().unwrap_or("").to_string();
+                        clipboard::copy_to_clipboard(&first_line);
+                        app.status_message = Some(("1 line yanked".to_string(), Instant::now()));
+                    }
+                    continue;
+                }
+                // Fall through to normal handling if not 'y'
+            }
+
             match (key.code, key.modifiers) {
                 (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => return Ok(Action::Quit),
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(Action::Quit),
@@ -257,6 +304,22 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                             session_id: hit.session.id.clone(),
                             chunk_id: hit.chunk.id,
                         });
+                    }
+                }
+                (KeyCode::Char('y'), _) => {
+                    app.pending_y = true;
+                }
+                (KeyCode::Char('Y'), _) => {
+                    // Y: yank full chunk
+                    if let Some(hit) = app.selected_hit() {
+                        let clean = strip_ansi_escapes::strip_str(&hit.chunk.content);
+                        let text = clean.trim().to_string();
+                        let line_count = text.lines().count();
+                        clipboard::copy_to_clipboard(&text);
+                        app.status_message = Some((
+                            format!("{line_count} line{} yanked", if line_count == 1 { "" } else { "s" }),
+                            Instant::now(),
+                        ));
                     }
                 }
                 (KeyCode::Tab, _) => {

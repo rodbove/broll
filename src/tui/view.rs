@@ -8,7 +8,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use std::collections::HashMap;
+use std::time::Instant;
 
+use super::clipboard;
 use super::highlight::highlight_line;
 use crate::storage::models::{Annotation, Chunk, ChunkKind};
 use crate::storage::Database;
@@ -17,6 +19,7 @@ use crate::storage::Database;
 enum Mode {
     Normal,
     SearchInput,
+    Visual,
 }
 
 struct ViewApp {
@@ -24,6 +27,8 @@ struct ViewApp {
     plain_lines: Vec<String>,
     title: String,
     scroll: usize,
+    cursor: usize,
+    visible_height: usize,
     mode: Mode,
     search_input: String,
     matches: Vec<usize>,
@@ -32,6 +37,14 @@ struct ViewApp {
     highlight_lines: Vec<usize>,
     /// Whether this view was opened from the search TUI
     from_search: bool,
+    /// Visual mode anchor line
+    visual_anchor: usize,
+    /// Pending 'y' keypress for yy combo
+    pending_y: bool,
+    /// Count prefix for yank (e.g. 3yy)
+    count_prefix: Option<usize>,
+    /// Status message shown temporarily
+    status_message: Option<(String, Instant)>,
 }
 
 impl ViewApp {
@@ -87,6 +100,57 @@ impl ViewApp {
         self.search_input.clear();
         self.matches.clear();
         self.current_match = None;
+    }
+
+    fn yank_lines(&mut self, start: usize, end: usize) {
+        let end = end.min(self.plain_lines.len());
+        if start >= end {
+            return;
+        }
+        // Strip the [HH:MM:SS] timestamp prefix from yanked lines
+        let text: String = self.plain_lines[start..end]
+            .iter()
+            .map(|l| {
+                if l.starts_with('[') {
+                    if let Some(pos) = l.find("] ") {
+                        return &l[pos + 2..];
+                    }
+                }
+                l.as_str()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        clipboard::copy_to_clipboard(&text);
+        let count = end - start;
+        let msg = if count == 1 {
+            "1 line yanked".to_string()
+        } else {
+            format!("{count} lines yanked")
+        };
+        self.status_message = Some((msg, Instant::now()));
+    }
+
+    fn yank_current(&mut self, count: usize) {
+        let start = self.cursor;
+        self.yank_lines(start, start + count);
+    }
+
+    fn ensure_cursor_visible(&mut self) {
+        if self.cursor < self.scroll {
+            self.scroll = self.cursor;
+        } else if self.cursor >= self.scroll + self.visible_height {
+            self.scroll = self.cursor.saturating_sub(self.visible_height - 1);
+        }
+    }
+
+    fn move_cursor_down(&mut self, n: usize) {
+        self.cursor = (self.cursor + n).min(self.lines.len().saturating_sub(1));
+        self.ensure_cursor_visible();
+    }
+
+    fn move_cursor_up(&mut self, n: usize) {
+        self.cursor = self.cursor.saturating_sub(n);
+        self.ensure_cursor_visible();
     }
 }
 
@@ -186,12 +250,18 @@ pub fn run(session_id: &str) -> Result<()> {
         plain_lines,
         title,
         scroll: 0,
+        cursor: 0,
+        visible_height: 0,
         mode: Mode::Normal,
         search_input: String::new(),
         matches: Vec::new(),
         current_match: None,
         highlight_lines: Vec::new(),
         from_search: false,
+        visual_anchor: 0,
+        pending_y: false,
+        count_prefix: None,
+        status_message: None,
     };
 
     let mut terminal = ratatui::init();
@@ -249,82 +319,103 @@ pub fn run_in_terminal(
         plain_lines,
         title,
         scroll: initial_scroll,
+        cursor: initial_scroll,
+        visible_height: 0,
         mode: Mode::Normal,
         search_input: String::new(),
         matches: Vec::new(),
         current_match: None,
         highlight_lines,
         from_search: true,
+        visual_anchor: 0,
+        pending_y: false,
+        count_prefix: None,
+        status_message: None,
     };
 
     run_loop(terminal, &mut app)
 }
 
+fn apply_line_bg(line: &Line<'static>, bg: Color) -> Line<'static> {
+    Line::from(
+        line.spans
+            .iter()
+            .map(|s| Span::styled(s.content.clone(), s.style.bg(bg)))
+            .collect::<Vec<_>>(),
+    )
+}
+
 fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
     loop {
+        // Expire status message after 3 seconds
+        if let Some((_, when)) = &app.status_message {
+            if when.elapsed().as_secs() >= 3 {
+                app.status_message = None;
+            }
+        }
+
         terminal.draw(|frame| {
             let area = frame.area();
             let total_lines = app.lines.len();
 
-            let layout = if app.mode == Mode::SearchInput {
+            let has_status_bar = app.mode == Mode::SearchInput || app.status_message.is_some();
+            let layout = if has_status_bar {
                 Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area)
             } else {
                 Layout::vertical([Constraint::Min(1)]).split(area)
             };
 
             let visible_height = layout[0].height.saturating_sub(2) as usize;
+            app.visible_height = visible_height;
             let max_scroll = total_lines.saturating_sub(visible_height);
             app.scroll = app.scroll.min(max_scroll);
+            app.cursor = app.cursor.min(total_lines.saturating_sub(1));
 
-            // Build display lines with search/highlight styling
+            // Determine visual selection range
+            let visual_range = if app.mode == Mode::Visual {
+                let a = app.visual_anchor.min(app.cursor);
+                let b = app.visual_anchor.max(app.cursor);
+                Some((a, b))
+            } else {
+                None
+            };
+
             let has_search_matches = !app.matches.is_empty();
             let has_highlights = !app.highlight_lines.is_empty();
-            let display_lines: Vec<Line> = if !has_search_matches && !has_highlights {
-                app.lines.clone()
-            } else {
-                app.lines
-                    .iter()
-                    .enumerate()
-                    .map(|(i, line)| {
-                        // Search matches take priority
-                        if has_search_matches && app.matches.binary_search(&i).is_ok() {
-                            let is_current = app
-                                .current_match
-                                .map(|m| app.matches[m] == i)
-                                .unwrap_or(false);
-                            let bg = if is_current {
-                                Color::Rgb(180, 140, 0)
-                            } else {
-                                Color::Rgb(50, 50, 70)
-                            };
-                            Line::from(
-                                line.spans
-                                    .iter()
-                                    .map(|s| {
-                                        Span::styled(s.content.clone(), s.style.bg(bg))
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
-                        } else if has_highlights
-                            && app.highlight_lines.binary_search(&i).is_ok()
-                        {
-                            Line::from(
-                                line.spans
-                                    .iter()
-                                    .map(|s| {
-                                        Span::styled(
-                                            s.content.clone(),
-                                            s.style.bg(Color::Rgb(50, 50, 70)),
-                                        )
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
-                        } else {
-                            line.clone()
+            let display_lines: Vec<Line> = app.lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    // Visual selection takes highest priority
+                    if let Some((va, vb)) = visual_range {
+                        if i >= va && i <= vb {
+                            return apply_line_bg(line, Color::Rgb(60, 60, 100));
                         }
-                    })
-                    .collect()
-            };
+                    }
+                    // Cursor line
+                    if i == app.cursor && app.mode != Mode::SearchInput {
+                        return apply_line_bg(line, Color::Rgb(30, 30, 50));
+                    }
+                    // Search matches
+                    if has_search_matches && app.matches.binary_search(&i).is_ok() {
+                        let is_current = app
+                            .current_match
+                            .map(|m| app.matches[m] == i)
+                            .unwrap_or(false);
+                        let bg = if is_current {
+                            Color::Rgb(180, 140, 0)
+                        } else {
+                            Color::Rgb(50, 50, 70)
+                        };
+                        return apply_line_bg(line, bg);
+                    }
+                    // Chunk highlights from search jump
+                    if has_highlights && app.highlight_lines.binary_search(&i).is_ok() {
+                        return apply_line_bg(line, Color::Rgb(50, 50, 70));
+                    }
+                    line.clone()
+                })
+                .collect();
 
             let match_info = if !app.matches.is_empty() {
                 let pos = app.current_match.map(|m| m + 1).unwrap_or(0);
@@ -341,15 +432,19 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
                 "q quit"
             };
 
-            let bottom_hint = if app.mode == Mode::SearchInput {
-                " Enter confirm | Esc cancel ".to_string()
-            } else if !app.matches.is_empty() {
-                format!(
-                    " n/N next/prev | / search | ↑/↓ scroll | {}{}  ",
-                    exit_hint, match_info
-                )
-            } else {
-                format!(" / search | ↑/↓ scroll | {} ", exit_hint)
+            let bottom_hint = match app.mode {
+                Mode::SearchInput => " Enter confirm | Esc cancel ".to_string(),
+                Mode::Visual => " V/Esc cancel | j/k select | y yank ".to_string(),
+                Mode::Normal => {
+                    if !app.matches.is_empty() {
+                        format!(
+                            " yy yank | V visual | n/N match | / search | {} {} ",
+                            exit_hint, match_info
+                        )
+                    } else {
+                        format!(" yy yank | V visual | / search | {} ", exit_hint)
+                    }
+                }
             };
 
             let block = Block::default()
@@ -374,14 +469,22 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
                 );
             }
 
-            // Search input bar
-            if app.mode == Mode::SearchInput {
-                let search_line = Line::from(vec![
-                    Span::styled("/", Style::default().fg(Color::Yellow)),
-                    Span::raw(app.search_input.as_str()),
-                    Span::styled("█", Style::default().fg(Color::Yellow)),
-                ]);
-                frame.render_widget(Paragraph::new(search_line), layout[1]);
+            // Bottom bar: search input or status message
+            if has_status_bar {
+                if app.mode == Mode::SearchInput {
+                    let search_line = Line::from(vec![
+                        Span::styled("/", Style::default().fg(Color::Yellow)),
+                        Span::raw(app.search_input.as_str()),
+                        Span::styled("█", Style::default().fg(Color::Yellow)),
+                    ]);
+                    frame.render_widget(Paragraph::new(search_line), layout[1]);
+                } else if let Some((ref msg, _)) = app.status_message {
+                    let status_line = Line::from(Span::styled(
+                        format!(" {msg}"),
+                        Style::default().fg(Color::Green),
+                    ));
+                    frame.render_widget(Paragraph::new(status_line), layout[1]);
+                }
             }
         })?;
 
@@ -404,34 +507,103 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
                     }
                     _ => {}
                 },
-                Mode::Normal => match (key.code, key.modifiers) {
-                    (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => break,
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
-                    (KeyCode::Char('/'), _) => {
-                        app.clear_search();
-                        app.mode = Mode::SearchInput;
+                Mode::Visual => match (key.code, key.modifiers) {
+                    (KeyCode::Esc, _) | (KeyCode::Char('V'), _) | (KeyCode::Char('v'), _) => {
+                        app.mode = Mode::Normal;
                     }
-                    (KeyCode::Char('n'), KeyModifiers::NONE) => app.next_match(),
-                    (KeyCode::Char('N'), _) => app.prev_match(),
+                    (KeyCode::Char('y'), _) => {
+                        let a = app.visual_anchor.min(app.cursor);
+                        let b = app.visual_anchor.max(app.cursor);
+                        app.yank_lines(a, b + 1);
+                        app.mode = Mode::Normal;
+                    }
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                        app.scroll = app.scroll.saturating_add(1);
+                        app.move_cursor_down(1);
                     }
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                        app.scroll = app.scroll.saturating_sub(1);
+                        app.move_cursor_up(1);
                     }
-                    (KeyCode::PageDown, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                        app.scroll = app.scroll.saturating_add(20);
+                    (KeyCode::Char('G'), _) | (KeyCode::End, _) => {
+                        app.cursor = app.lines.len().saturating_sub(1);
+                        app.ensure_cursor_visible();
                     }
-                    (KeyCode::PageUp, _) | (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                        app.scroll = app.scroll.saturating_sub(20);
-                    }
-                    (KeyCode::Home, _) | (KeyCode::Char('g'), _) => {
-                        app.scroll = 0;
-                    }
-                    (KeyCode::End, _) | (KeyCode::Char('G'), _) => {
-                        app.scroll = app.lines.len();
+                    (KeyCode::Char('g'), _) | (KeyCode::Home, _) => {
+                        app.cursor = 0;
+                        app.ensure_cursor_visible();
                     }
                     _ => {}
+                },
+                Mode::Normal => {
+                    // Handle digit prefix for count (e.g. 3yy)
+                    if let KeyCode::Char(c) = key.code {
+                        if c.is_ascii_digit() && !app.pending_y {
+                            let digit = c.to_digit(10).unwrap() as usize;
+                            app.count_prefix = Some(
+                                app.count_prefix.unwrap_or(0) * 10 + digit,
+                            );
+                            continue;
+                        }
+                    }
+
+                    let count = app.count_prefix.take().unwrap_or(1);
+
+                    if app.pending_y {
+                        app.pending_y = false;
+                        if key.code == KeyCode::Char('y') {
+                            app.yank_current(count);
+                            continue;
+                        }
+                        // Any other key after 'y' cancels the pending yank
+                    }
+
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => break,
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Char('/'), _) => {
+                            app.clear_search();
+                            app.mode = Mode::SearchInput;
+                        }
+                        (KeyCode::Char('n'), KeyModifiers::NONE) => {
+                            app.next_match();
+                            app.cursor = app.scroll;
+                        }
+                        (KeyCode::Char('N'), _) => {
+                            app.prev_match();
+                            app.cursor = app.scroll;
+                        }
+                        (KeyCode::Char('y'), _) => {
+                            app.pending_y = true;
+                            app.count_prefix = if count > 1 { Some(count) } else { None };
+                        }
+                        (KeyCode::Char('Y'), _) => {
+                            app.yank_current(count);
+                        }
+                        (KeyCode::Char('V'), _) => {
+                            app.visual_anchor = app.cursor;
+                            app.mode = Mode::Visual;
+                        }
+                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                            app.move_cursor_down(count);
+                        }
+                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                            app.move_cursor_up(count);
+                        }
+                        (KeyCode::PageDown, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                            app.move_cursor_down(20);
+                        }
+                        (KeyCode::PageUp, _) | (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                            app.move_cursor_up(20);
+                        }
+                        (KeyCode::Home, _) | (KeyCode::Char('g'), _) => {
+                            app.cursor = 0;
+                            app.scroll = 0;
+                        }
+                        (KeyCode::End, _) | (KeyCode::Char('G'), _) => {
+                            app.cursor = app.lines.len().saturating_sub(1);
+                            app.scroll = app.lines.len();
+                        }
+                        _ => {}
+                    }
                 },
             }
         }

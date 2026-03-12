@@ -185,8 +185,8 @@ Use `--no-filter` to disable when you need to capture everything.
 
 | Key | Action |
 |-----|--------|
-| `j` / `Down` | Scroll down |
-| `k` / `Up` | Scroll up |
+| `j` / `Down` | Move cursor down |
+| `k` / `Up` | Move cursor up |
 | `Ctrl-d` / `PgDn` | Page down |
 | `Ctrl-u` / `PgUp` | Page up |
 | `g` / `Home` | Go to top |
@@ -194,6 +194,10 @@ Use `--no-filter` to disable when you need to capture everything.
 | `/` | Search within session |
 | `n` | Next search match |
 | `N` | Previous search match |
+| `yy` | Yank (copy) current line to clipboard |
+| `Y` | Same as `yy` |
+| `3yy` | Yank 3 lines starting from cursor |
+| `V` | Enter visual line mode (select range, then `y` to yank) |
 | `q` / `Esc` | Quit (or go back to search) |
 
 ### Search TUI
@@ -204,6 +208,8 @@ Use `--no-filter` to disable when you need to capture everything.
 | `j` / `Down` | Navigate results or scroll preview |
 | `k` / `Up` | Navigate results or scroll preview |
 | `Enter` | Open full session view at match |
+| `yy` | Yank first line of selected result |
+| `Y` | Yank full chunk of selected result |
 | `q` / `Esc` | Quit |
 
 ## Tech stack
