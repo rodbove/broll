@@ -68,7 +68,7 @@ fn highlight_json(text: &str) -> Vec<Span<'static>> {
                 let start = i;
                 i += 1;
                 while i < len {
-                    if bytes[i] == b'\\' {
+                    if bytes[i] == b'\\' && i + 1 < len {
                         i += 2;
                         continue;
                     }

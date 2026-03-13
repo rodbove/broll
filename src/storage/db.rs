@@ -118,25 +118,37 @@ impl Database {
         let full_id = self.resolve_session_id(prefix)?;
         let session = self.get_session_by_id(&full_id)?;
 
-        // Delete FTS entries for this session's chunks
-        self.conn.execute(
-            "DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE session_id = ?1)",
-            params![full_id],
-        )?;
-        self.conn.execute(
-            "DELETE FROM annotations WHERE session_id = ?1",
-            params![full_id],
-        )?;
-        self.conn.execute(
-            "DELETE FROM chunks WHERE session_id = ?1",
-            params![full_id],
-        )?;
-        self.conn.execute(
-            "DELETE FROM sessions WHERE id = ?1",
-            params![full_id],
-        )?;
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<()> {
+            self.conn.execute(
+                "DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE session_id = ?1)",
+                params![full_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM annotations WHERE session_id = ?1",
+                params![full_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM chunks WHERE session_id = ?1",
+                params![full_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM sessions WHERE id = ?1",
+                params![full_id],
+            )?;
+            Ok(())
+        })();
 
-        Ok((full_id, session.name))
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok((full_id, session.name))
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     pub fn add_annotation(&self, prefix: &str, content: &str) -> Result<String> {
