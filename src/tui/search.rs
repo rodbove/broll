@@ -10,7 +10,7 @@ use ratatui::{
         ScrollbarState,
     },
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::clipboard;
 use crate::storage::models::SearchHit;
@@ -18,6 +18,7 @@ use crate::storage::Database;
 
 #[derive(PartialEq)]
 enum Focus {
+    Input,
     Results,
     Preview,
 }
@@ -28,30 +29,78 @@ enum Action {
 }
 
 struct SearchApp {
+    db: Database,
     hits: Vec<SearchHit>,
     list_state: ListState,
-    query: String,
+    input: String,
+    cursor_pos: usize,
+    last_searched: String,
+    last_input_time: Option<Instant>,
+    group: Option<String>,
+    terminal_filter: Option<String>,
     preview_scroll: usize,
     focus: Focus,
     pending_y: bool,
     status_message: Option<(String, Instant)>,
 }
 
+const DEBOUNCE_MS: u64 = 150;
+
 impl SearchApp {
-    fn new(query: String, hits: Vec<SearchHit>) -> Self {
-        let mut list_state = ListState::default();
-        if !hits.is_empty() {
-            list_state.select(Some(0));
-        }
+    fn new(
+        db: Database,
+        query: Option<String>,
+        group: Option<String>,
+        terminal_filter: Option<String>,
+    ) -> Self {
+        let input = query.unwrap_or_default();
         Self {
-            hits,
-            list_state,
-            query,
+            db,
+            hits: Vec::new(),
+            list_state: ListState::default(),
+            cursor_pos: input.len(),
+            input,
+            last_searched: String::new(),
+            last_input_time: None,
+            group,
+            terminal_filter,
             preview_scroll: 0,
-            focus: Focus::Results,
+            focus: Focus::Input,
             pending_y: false,
             status_message: None,
         }
+    }
+
+    fn execute_search(&mut self) {
+        let query = self.input.trim();
+        if query.is_empty() {
+            self.hits.clear();
+            self.list_state.select(None);
+            self.last_searched.clear();
+            return;
+        }
+        if query == self.last_searched {
+            return;
+        }
+        self.last_searched = query.to_string();
+        match self.db.search(
+            query,
+            self.group.as_deref(),
+            self.terminal_filter.as_deref(),
+        ) {
+            Ok(hits) => {
+                self.hits = hits;
+                if self.hits.is_empty() {
+                    self.list_state.select(None);
+                } else {
+                    self.list_state.select(Some(0));
+                }
+            }
+            Err(_) => {
+                // FTS5 query error (e.g. special chars) — keep previous results
+            }
+        }
+        self.preview_scroll = 0;
     }
 
     fn selected_hit(&self) -> Option<&SearchHit> {
@@ -85,17 +134,23 @@ impl SearchApp {
     }
 }
 
-pub fn run(query: String, group: Option<String>, terminal_filter: Option<String>) -> Result<()> {
+pub fn run(
+    query: Option<String>,
+    group: Option<String>,
+    terminal_filter: Option<String>,
+) -> Result<()> {
     let db = Database::open()?;
-    let hits = db.search(&query, group.as_deref(), terminal_filter.as_deref())?;
-
-    if hits.is_empty() {
-        println!("No results found for '{query}'.");
-        return Ok(());
-    }
-
     let mut terminal = ratatui::init();
-    let mut app = SearchApp::new(query, hits);
+    let mut app = SearchApp::new(db, query, group, terminal_filter);
+
+    // If an initial query was provided, run the search immediately
+    if !app.input.is_empty() {
+        app.execute_search();
+        // Start in results mode if we have results
+        if !app.hits.is_empty() {
+            app.focus = Focus::Results;
+        }
+    }
 
     let result = loop {
         match run_loop(&mut terminal, &mut app)? {
@@ -115,27 +170,65 @@ pub fn run(query: String, group: Option<String>, terminal_filter: Option<String>
 
 fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Action> {
     loop {
+        // Check if we need to fire a debounced search
+        if app
+            .last_input_time
+            .is_some_and(|t| t.elapsed() >= Duration::from_millis(DEBOUNCE_MS))
+        {
+            app.last_input_time = None;
+            app.execute_search();
+        }
+
         // Expire status message after 3 seconds
-        if let Some((_, when)) = &app.status_message {
-            if when.elapsed().as_secs() >= 3 {
-                app.status_message = None;
-            }
+        if app
+            .status_message
+            .as_ref()
+            .is_some_and(|(_, when)| when.elapsed().as_secs() >= 3)
+        {
+            app.status_message = None;
         }
 
         terminal.draw(|frame| {
             let area = frame.area();
 
             let has_status = app.status_message.is_some();
-            let outer = if has_status {
-                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area)
-            } else {
-                Layout::vertical([Constraint::Min(1)]).split(area)
-            };
 
-            // Split: left panel (results list) | right panel (preview)
+            // Layout: input bar on top, main content, optional status
+            let mut constraints = vec![Constraint::Length(3), Constraint::Min(1)];
+            if has_status {
+                constraints.push(Constraint::Length(1));
+            }
+            let outer = Layout::vertical(constraints).split(area);
+
+            // Input bar
+            let input_border_style = if app.focus == Focus::Input {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            let input_block = Block::default()
+                .title(" Search ")
+                .borders(Borders::ALL)
+                .border_style(input_border_style);
+            let input_widget = Paragraph::new(Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Yellow)),
+                Span::raw(&app.input),
+            ]))
+            .block(input_block);
+            frame.render_widget(input_widget, outer[0]);
+
+            // Place cursor in input when focused
+            if app.focus == Focus::Input {
+                frame.set_cursor_position((
+                    outer[0].x + 2 + app.cursor_pos as u16 + 1, // +1 for border, +2 for "> "
+                    outer[0].y + 1,
+                ));
+            }
+
+            // Split main area: left panel (results list) | right panel (preview)
             let chunks =
                 Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-                    .split(outer[0]);
+                    .split(outer[1]);
 
             // Left: results list
             let items: Vec<ListItem> = app
@@ -162,11 +255,15 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                 .collect();
 
             let count_display = if app.hits.len() >= 100 {
-                "100+ results".to_string()
+                "100+".to_string()
             } else {
                 format!("{}", app.hits.len())
             };
-            let list_title = format!(" Results for '{}' ({}) ", app.query, count_display);
+            let list_title = if app.input.trim().is_empty() {
+                " Results ".to_string()
+            } else {
+                format!(" Results ({}) ", count_display)
+            };
             let results_border_style = if app.focus == Focus::Results {
                 Style::default().fg(Color::Cyan)
             } else {
@@ -229,8 +326,13 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                 }
 
                 lines
+            } else if app.input.trim().is_empty() {
+                vec![Line::styled(
+                    "Type to search...",
+                    Style::default().fg(Color::DarkGray),
+                )]
             } else {
-                vec![Line::raw("No selection")]
+                vec![Line::raw("No results")]
             };
 
             let preview_total_lines = preview_content.len();
@@ -243,11 +345,15 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
             } else {
                 Style::default()
             };
+            let help_text = match app.focus {
+                Focus::Input => " Type to search | ↓/Tab navigate | Esc quit ",
+                _ => " / search | Tab focus | ↑/↓ nav | Enter view | yy/Y yank | q quit ",
+            };
             let preview = Paragraph::new(preview_content)
                 .block(
                     Block::default()
                         .title(" Preview ")
-                        .title_bottom(" Tab | ↑/↓ nav | Enter view | yy/Y yank | q quit ")
+                        .title_bottom(help_text)
                         .borders(Borders::ALL)
                         .border_style(preview_border_style),
                 )
@@ -267,18 +373,109 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
             }
 
             // Status message
-            if has_status {
-                if let Some((ref msg, _)) = app.status_message {
-                    let status_line = Line::from(Span::styled(
-                        format!(" {msg}"),
-                        Style::default().fg(Color::Green),
-                    ));
-                    frame.render_widget(Paragraph::new(status_line), outer[1]);
-                }
+            if let Some((ref msg, _)) = app.status_message {
+                let status_line = Line::from(Span::styled(
+                    format!(" {msg}"),
+                    Style::default().fg(Color::Green),
+                ));
+                frame.render_widget(Paragraph::new(status_line), outer[outer.len() - 1]);
             }
         })?;
 
+        // Use a short poll timeout so debounce fires promptly
+        let poll_timeout = if app.last_input_time.is_some() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(100)
+        };
+
+        if !event::poll(poll_timeout)? {
+            continue;
+        }
+
         if let Event::Key(key) = event::read()? {
+            // Input mode handling
+            if app.focus == Focus::Input {
+                match (key.code, key.modifiers) {
+                    (KeyCode::Esc, _) => {
+                        if app.input.is_empty() {
+                            return Ok(Action::Quit);
+                        }
+                        // If we have results, move to results; otherwise quit
+                        if !app.hits.is_empty() {
+                            app.focus = Focus::Results;
+                        } else {
+                            return Ok(Action::Quit);
+                        }
+                    }
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(Action::Quit),
+                    (KeyCode::Enter, _) | (KeyCode::Down, _) => {
+                        // Execute search immediately and move focus to results
+                        app.last_input_time = None;
+                        app.execute_search();
+                        if !app.hits.is_empty() {
+                            app.focus = Focus::Results;
+                        }
+                    }
+                    (KeyCode::Tab, _) => {
+                        app.last_input_time = None;
+                        app.execute_search();
+                        if !app.hits.is_empty() {
+                            app.focus = Focus::Results;
+                        }
+                    }
+                    (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => {
+                        app.cursor_pos = 0;
+                    }
+                    (KeyCode::Char('e'), KeyModifiers::CONTROL) | (KeyCode::End, _) => {
+                        app.cursor_pos = app.input.len();
+                    }
+                    (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                        app.input.drain(..app.cursor_pos);
+                        app.cursor_pos = 0;
+                        app.last_input_time = Some(Instant::now());
+                    }
+                    (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                        // Delete word backwards
+                        let new_pos = app.input[..app.cursor_pos]
+                            .rfind(|c: char| c.is_whitespace())
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
+                        app.input.drain(new_pos..app.cursor_pos);
+                        app.cursor_pos = new_pos;
+                        app.last_input_time = Some(Instant::now());
+                    }
+                    (KeyCode::Char(c), _) => {
+                        app.input.insert(app.cursor_pos, c);
+                        app.cursor_pos += 1;
+                        app.last_input_time = Some(Instant::now());
+                    }
+                    (KeyCode::Backspace, _) => {
+                        if app.cursor_pos > 0 {
+                            app.cursor_pos -= 1;
+                            app.input.remove(app.cursor_pos);
+                            app.last_input_time = Some(Instant::now());
+                        }
+                    }
+                    (KeyCode::Delete, _) => {
+                        if app.cursor_pos < app.input.len() {
+                            app.input.remove(app.cursor_pos);
+                            app.last_input_time = Some(Instant::now());
+                        }
+                    }
+                    (KeyCode::Left, _) => {
+                        app.cursor_pos = app.cursor_pos.saturating_sub(1);
+                    }
+                    (KeyCode::Right, _) => {
+                        app.cursor_pos = (app.cursor_pos + 1).min(app.input.len());
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Results/Preview mode handling
+
             // Handle pending 'y' for yy combo
             if app.pending_y {
                 app.pending_y = false;
@@ -298,6 +495,9 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
             match (key.code, key.modifiers) {
                 (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => return Ok(Action::Quit),
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(Action::Quit),
+                (KeyCode::Char('/'), _) | (KeyCode::Char('i'), _) => {
+                    app.focus = Focus::Input;
+                }
                 (KeyCode::Enter, _) => {
                     if let Some(hit) = app.selected_hit() {
                         return Ok(Action::ViewSession {
@@ -317,7 +517,10 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                         let line_count = text.lines().count();
                         clipboard::copy_to_clipboard(&text);
                         app.status_message = Some((
-                            format!("{line_count} line{} yanked", if line_count == 1 { "" } else { "s" }),
+                            format!(
+                                "{line_count} line{} yanked",
+                                if line_count == 1 { "" } else { "s" }
+                            ),
                             Instant::now(),
                         ));
                     }
@@ -325,18 +528,18 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                 (KeyCode::Tab, _) => {
                     app.focus = match app.focus {
                         Focus::Results => Focus::Preview,
-                        Focus::Preview => Focus::Results,
+                        _ => Focus::Results,
                     };
                 }
                 (KeyCode::Down, _) | (KeyCode::Char('j'), _) => match app.focus {
                     Focus::Results => app.next(),
-                    Focus::Preview => {
+                    _ => {
                         app.preview_scroll = app.preview_scroll.saturating_add(1);
                     }
                 },
                 (KeyCode::Up, _) | (KeyCode::Char('k'), _) => match app.focus {
                     Focus::Results => app.previous(),
-                    Focus::Preview => {
+                    _ => {
                         app.preview_scroll = app.preview_scroll.saturating_sub(1);
                     }
                 },

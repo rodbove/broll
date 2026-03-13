@@ -24,6 +24,7 @@ fn main() -> Result<()> {
         Command::Search { query, group, terminal } => {
             tui::search::run(query, group, terminal)?;
         }
+
         Command::Annotate { id, note } => {
             storage::annotate_session(&id, &note)?;
         }

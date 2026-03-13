@@ -45,8 +45,8 @@ pub enum Command {
 
     /// Search session output (opens TUI)
     Search {
-        /// Text or regex to search for
-        query: String,
+        /// Text to search for (opens live search if omitted)
+        query: Option<String>,
 
         /// Filter by group
         #[arg(short, long)]
