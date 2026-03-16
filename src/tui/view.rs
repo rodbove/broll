@@ -24,7 +24,6 @@ enum Mode {
 
 struct ViewApp {
     lines: Vec<Line<'static>>,
-    plain_lines: Vec<String>,
     title: String,
     scroll: usize,
     cursor: usize,
@@ -48,6 +47,11 @@ struct ViewApp {
 }
 
 impl ViewApp {
+    /// Extract plain text from a styled Line by concatenating span contents.
+    fn plain_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
     fn search(&mut self) {
         self.matches.clear();
         self.current_match = None;
@@ -55,8 +59,9 @@ impl ViewApp {
             return;
         }
         let query = self.search_input.to_lowercase();
-        for (i, line) in self.plain_lines.iter().enumerate() {
-            if line.to_lowercase().contains(&query) {
+        for (i, line) in self.lines.iter().enumerate() {
+            let text = Self::plain_text(line);
+            if text.to_lowercase().contains(&query) {
                 self.matches.push(i);
             }
         }
@@ -103,20 +108,21 @@ impl ViewApp {
     }
 
     fn yank_lines(&mut self, start: usize, end: usize) {
-        let end = end.min(self.plain_lines.len());
+        let end = end.min(self.lines.len());
         if start >= end {
             return;
         }
         // Strip the [HH:MM:SS] timestamp prefix from yanked lines
-        let text: String = self.plain_lines[start..end]
+        let text: String = self.lines[start..end]
             .iter()
-            .map(|l| {
-                if l.starts_with('[') {
-                    if let Some(pos) = l.find("] ") {
-                        return &l[pos + 2..];
+            .map(|line| {
+                let plain = Self::plain_text(line);
+                if plain.starts_with('[') {
+                    if let Some(pos) = plain.find("] ") {
+                        return plain[pos + 2..].to_string();
                     }
                 }
-                l.as_str()
+                plain
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -162,11 +168,9 @@ fn build_session_lines(
     annotations: &[Annotation],
 ) -> (
     Vec<Line<'static>>,
-    Vec<String>,
     HashMap<i64, usize>,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut plain_lines: Vec<String> = Vec::new();
     let mut chunk_line_map: HashMap<i64, usize> = HashMap::new();
 
     if !annotations.is_empty() {
@@ -177,12 +181,9 @@ fn build_session_lines(
         let dim_style = Style::default().fg(Color::DarkGray);
 
         lines.push(Line::styled("── Notes ──", label_style));
-        plain_lines.push("── Notes ──".to_string());
 
         for ann in annotations {
             let time = ann.created_at.format("%Y-%m-%d %H:%M").to_string();
-            let text = format!("[{}] {}", time, ann.content);
-            plain_lines.push(text);
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("[{}] ", time),
@@ -196,9 +197,7 @@ fn build_session_lines(
             "─".repeat(40),
             dim_style,
         ));
-        plain_lines.push("─".repeat(40));
         lines.push(Line::raw(""));
-        plain_lines.push(String::new());
     }
 
     for chunk in chunks {
@@ -219,7 +218,6 @@ fn build_session_lines(
                 chunk_line_map.insert(chunk.id, lines.len());
                 first = false;
             }
-            plain_lines.push(format!("[{}] {}", timestamp, line_text));
             let is_input = chunk.kind == ChunkKind::Input;
             let mut spans = vec![Span::styled(format!("[{timestamp}] "), prefix_style)];
             spans.extend(highlight_line(line_text, style, is_input));
@@ -227,7 +225,7 @@ fn build_session_lines(
         }
     }
 
-    (lines, plain_lines, chunk_line_map)
+    (lines, chunk_line_map)
 }
 
 pub fn run(session_id: &str) -> Result<()> {
@@ -247,10 +245,9 @@ pub fn run(session_id: &str) -> Result<()> {
     };
 
     let annotations = db.get_annotations(&full_id)?;
-    let (lines, plain_lines, _) = build_session_lines(&chunks, &annotations);
+    let (lines, _) = build_session_lines(&chunks, &annotations);
     let mut app = ViewApp {
         lines,
-        plain_lines,
         title,
         scroll: 0,
         cursor: 0,
@@ -296,7 +293,7 @@ pub fn run_in_terminal(
     };
 
     let annotations = db.get_annotations(&full_id)?;
-    let (lines, plain_lines, chunk_line_map) = build_session_lines(&chunks, &annotations);
+    let (lines, chunk_line_map) = build_session_lines(&chunks, &annotations);
     let initial_scroll = scroll_to_chunk
         .and_then(|cid| chunk_line_map.get(&cid).copied())
         .unwrap_or(0);
@@ -321,7 +318,6 @@ pub fn run_in_terminal(
 
     let mut app = ViewApp {
         lines,
-        plain_lines,
         title,
         scroll: initial_scroll,
         cursor: initial_scroll,
