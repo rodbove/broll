@@ -374,7 +374,8 @@ impl Database {
         }
 
         let sql = format!(
-            "SELECT c.id, c.session_id, c.timestamp, c.content, c.kind
+            "SELECT c.id, c.session_id, c.timestamp, c.content, c.kind,
+                    s.id, s.started_at, s.ended_at, s.grp, s.terminal_label, s.tags, s.shell, s.name
              FROM chunks_fts fts
              JOIN chunks c ON c.id = fts.rowid
              JOIN sessions s ON s.id = c.session_id
@@ -388,21 +389,31 @@ impl Database {
             param_values.iter().map(|p| p.as_ref()).collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_ref.as_slice(), |row| {
-            Ok(ChunkRow {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                timestamp: row.get(2)?,
-                content: row.get(3)?,
-                kind: row.get(4)?,
-            })
+            Ok((
+                ChunkRow {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    timestamp: row.get(2)?,
+                    content: row.get(3)?,
+                    kind: row.get(4)?,
+                },
+                SessionRow {
+                    id: row.get(5)?,
+                    started_at: row.get(6)?,
+                    ended_at: row.get(7)?,
+                    grp: row.get(8)?,
+                    terminal_label: row.get(9)?,
+                    tags: row.get(10)?,
+                    shell: row.get(11)?,
+                    name: row.get(12)?,
+                },
+            ))
         })?;
 
         for row in rows {
-            let row = row?;
-            let session_id = row.session_id.clone();
-            let chunk = parse_chunk(row)?;
-            let session = self.get_session_by_id(&session_id)?;
-
+            let (chunk_row, session_row) = row?;
+            let chunk = parse_chunk(chunk_row)?;
+            let session = parse_session(session_row)?;
             hits.push(SearchHit { session, chunk });
         }
 
