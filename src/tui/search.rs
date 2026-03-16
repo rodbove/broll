@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::{
     DefaultTerminal,
     layout::{Constraint, Layout},
@@ -141,6 +141,7 @@ pub fn run(
 ) -> Result<()> {
     let db = Database::open()?;
     let mut terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
     let mut app = SearchApp::new(db, query, group, terminal_filter);
 
     // If an initial query was provided, run the search immediately
@@ -164,6 +165,7 @@ pub fn run(
         }
     };
 
+    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
     ratatui::restore();
     result
 }
@@ -393,7 +395,42 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
             continue;
         }
 
-        if let Event::Key(key) = event::read()? {
+        let ev = event::read()?;
+
+        if let Event::Mouse(mouse) = &ev {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => match app.focus {
+                    Focus::Results => app.previous(),
+                    Focus::Preview => {
+                        app.preview_scroll = app.preview_scroll.saturating_sub(3);
+                    }
+                    Focus::Input => {}
+                },
+                MouseEventKind::ScrollDown => match app.focus {
+                    Focus::Results => app.next(),
+                    Focus::Preview => {
+                        app.preview_scroll = app.preview_scroll.saturating_add(3);
+                    }
+                    Focus::Input => {}
+                },
+                MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                    // Click on results list to select an item
+                    // Results panel starts at row 3 (input bar height) + 1 (border)
+                    if mouse.row >= 4 && app.focus != Focus::Input {
+                        let clicked_index = (mouse.row as usize).saturating_sub(4);
+                        if clicked_index < app.hits.len() {
+                            app.list_state.select(Some(clicked_index));
+                            app.preview_scroll = 0;
+                            app.focus = Focus::Results;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        if let Event::Key(key) = ev {
             // Input mode handling
             if app.focus == Focus::Input {
                 match (key.code, key.modifiers) {

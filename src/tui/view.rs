@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::{
     DefaultTerminal,
     layout::{Constraint, Layout},
@@ -268,7 +268,9 @@ pub fn run(session_id: &str) -> Result<()> {
     };
 
     let mut terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
     let result = run_loop(&mut terminal, &mut app);
+    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
     ratatui::restore();
     result
 }
@@ -491,7 +493,26 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
             }
         })?;
 
-        if let Event::Key(key) = event::read()? {
+        match event::read()? {
+            Event::Mouse(mouse) => {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        app.move_cursor_up(3);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        app.move_cursor_down(3);
+                    }
+                    MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                        // Click to position cursor (row is relative to terminal, adjust for border)
+                        let clicked_line = app.scroll + mouse.row.saturating_sub(1) as usize;
+                        if clicked_line < app.lines.len() {
+                            app.cursor = clicked_line;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::Key(key) => {
             match app.mode {
                 Mode::SearchInput => match key.code {
                     KeyCode::Enter => {
@@ -609,6 +630,8 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
                     }
                 },
             }
+        }
+            _ => {}
         }
     }
 
