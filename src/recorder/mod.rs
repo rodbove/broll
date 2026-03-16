@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -229,6 +229,9 @@ pub fn start_session(
     let resize_flag = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resize_flag))?;
 
+    let term_cols = Arc::new(AtomicU16::new(cols));
+    let term_cols_storage = Arc::clone(&term_cols);
+
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
     // Spawn thread to forward stdin -> PTY
@@ -260,7 +263,11 @@ pub fn start_session(
 
         /// Render raw terminal bytes through a virtual terminal and return plain text lines.
         fn render_vt(raw: &[u8], term_cols: u16) -> String {
-            let mut parser = vt100::Parser::new(500, term_cols, 0);
+            // Estimate rows needed: at least one row per newline, with a reasonable minimum.
+            // This avoids the previous hardcoded 500-row limit that silently lost output.
+            let newline_count = raw.iter().filter(|&&b| b == b'\n').count();
+            let estimated_rows = (newline_count + 1).max(500) as u16;
+            let mut parser = vt100::Parser::new(estimated_rows, term_cols, 0);
             parser.process(raw);
             let screen = parser.screen();
             let mut lines: Vec<String> = Vec::new();
@@ -362,7 +369,7 @@ pub fn start_session(
                                         raw_buf.drain(..PRECMD_MARKER.len());
 
                                         cmd_output_bytes.extend_from_slice(output.as_bytes());
-                                        let rendered = render_vt(&cmd_output_bytes, cols);
+                                        let rendered = render_vt(&cmd_output_bytes, term_cols_storage.load(Ordering::Relaxed));
                                         store_chunk(
                                             &rendered,
                                             ChunkKind::Output,
@@ -394,7 +401,7 @@ pub fn start_session(
                             raw_buf.clear();
                             if !cmd_output_bytes.is_empty() {
                                 if !has_hooks || state == CaptureState::Capturing {
-                                    let rendered = render_vt(&cmd_output_bytes, cols);
+                                    let rendered = render_vt(&cmd_output_bytes, term_cols_storage.load(Ordering::Relaxed));
                                     store_chunk(
                                         &rendered,
                                         ChunkKind::Output,
@@ -412,7 +419,7 @@ pub fn start_session(
                         if !cmd_output_bytes.is_empty()
                             && (!has_hooks || state == CaptureState::Capturing)
                         {
-                            let rendered = render_vt(&cmd_output_bytes, cols);
+                            let rendered = render_vt(&cmd_output_bytes, term_cols_storage.load(Ordering::Relaxed));
                             store_chunk(
                                 &rendered,
                                 ChunkKind::Output,
@@ -439,6 +446,7 @@ pub fn start_session(
     loop {
         if resize_flag.swap(false, Ordering::Relaxed) {
             if let Ok((cols, rows)) = crossterm::terminal::size() {
+                term_cols.store(cols, Ordering::Relaxed);
                 let _ = pair.master.resize(PtySize {
                     rows,
                     cols,
