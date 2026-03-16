@@ -120,14 +120,17 @@ impl ViewApp {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        clipboard::copy_to_clipboard(&text);
-        let count = end - start;
-        let msg = if count == 1 {
-            "1 line yanked".to_string()
+        if clipboard::copy_to_clipboard(&text) {
+            let count = end - start;
+            let msg = if count == 1 {
+                "1 line yanked".to_string()
+            } else {
+                format!("{count} lines yanked")
+            };
+            self.status_message = Some((msg, Instant::now()));
         } else {
-            format!("{count} lines yanked")
-        };
-        self.status_message = Some((msg, Instant::now()));
+            self.status_message = Some(("clipboard unavailable".to_string(), Instant::now()));
+        }
     }
 
     fn yank_current(&mut self, count: usize) {
