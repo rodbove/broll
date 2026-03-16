@@ -220,3 +220,182 @@ fn highlight_general(text: &str, base_style: Style) -> Vec<Span<'static>> {
 
     spans
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Style;
+
+    /// Helper: collect span text content from a Vec<Span>.
+    fn span_texts<'a>(spans: &'a [Span]) -> Vec<&'a str> {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Helper: find the style of the span containing `needle`.
+    fn style_of(spans: &[Span], needle: &str) -> Option<Style> {
+        spans.iter().find(|s| s.content.contains(needle)).map(|s| s.style)
+    }
+
+    // --- is_json_like ---
+
+    #[test]
+    fn json_like_object() {
+        assert!(is_json_like(r#"{"key": "value"}"#));
+    }
+
+    #[test]
+    fn json_like_array() {
+        assert!(is_json_like("[1, 2, 3]"));
+    }
+
+    #[test]
+    fn json_like_quoted_key() {
+        assert!(is_json_like(r#""name": "test""#));
+    }
+
+    #[test]
+    fn not_json_plain_text() {
+        assert!(!is_json_like("hello world"));
+    }
+
+    #[test]
+    fn not_json_empty() {
+        assert!(!is_json_like(""));
+    }
+
+    // --- highlight_json ---
+
+    #[test]
+    fn json_key_vs_string_value() {
+        let spans = highlight_json(r#"{"name": "alice"}"#);
+        assert_eq!(style_of(&spans, "\"name\""), Some(KEY_STYLE));
+        assert_eq!(style_of(&spans, "\"alice\""), Some(STRING_STYLE));
+    }
+
+    #[test]
+    fn json_number() {
+        let spans = highlight_json(r#"{"count": 42}"#);
+        assert_eq!(style_of(&spans, "42"), Some(NUMBER_STYLE));
+    }
+
+    #[test]
+    fn json_bool_and_null() {
+        let spans = highlight_json(r#"{"a": true, "b": null}"#);
+        assert_eq!(style_of(&spans, "true"), Some(BOOL_NULL_STYLE));
+        assert_eq!(style_of(&spans, "null"), Some(BOOL_NULL_STYLE));
+    }
+
+    #[test]
+    fn json_structural_chars() {
+        let spans = highlight_json(r#"{"a": 1}"#);
+        assert_eq!(style_of(&spans, "{"), Some(STRUCTURAL_STYLE));
+        assert_eq!(style_of(&spans, "}"), Some(STRUCTURAL_STYLE));
+        assert_eq!(style_of(&spans, ":"), Some(STRUCTURAL_STYLE));
+    }
+
+    #[test]
+    fn json_trailing_backslash_no_panic() {
+        // This previously caused an out-of-bounds panic
+        let spans = highlight_json(r#""value\"#);
+        let text: String = span_texts(&spans).join("");
+        assert_eq!(text, r#""value\"#);
+    }
+
+    #[test]
+    fn json_escaped_quote_in_string() {
+        let spans = highlight_json(r#"{"msg": "say \"hi\""}"#);
+        let text: String = span_texts(&spans).join("");
+        assert_eq!(text, r#"{"msg": "say \"hi\""}"#);
+    }
+
+    #[test]
+    fn json_nested_object() {
+        let spans = highlight_json(r#"{"a": {"b": 1}}"#);
+        assert_eq!(style_of(&spans, "\"a\""), Some(KEY_STYLE));
+        assert_eq!(style_of(&spans, "\"b\""), Some(KEY_STYLE));
+        assert_eq!(style_of(&spans, "1"), Some(NUMBER_STYLE));
+    }
+
+    // --- highlight_general ---
+
+    #[test]
+    fn log_level_error() {
+        let base = Style::default();
+        let spans = highlight_general("2024-01-01 ERROR something failed", base);
+        let error_style = style_of(&spans, "ERROR").unwrap();
+        assert_eq!(error_style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn log_level_warn() {
+        let base = Style::default();
+        let spans = highlight_general("WARNING: disk almost full", base);
+        let warn_style = style_of(&spans, "WARNING").unwrap();
+        assert_eq!(warn_style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn log_level_info_and_debug() {
+        let base = Style::default();
+        let spans = highlight_general("INFO started | DEBUG details", base);
+        assert_eq!(style_of(&spans, "INFO").unwrap().fg, Some(Color::Green));
+        assert_eq!(style_of(&spans, "DEBUG").unwrap().fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn url_highlighted() {
+        let base = Style::default();
+        let spans = highlight_general("visit https://example.com/path for info", base);
+        assert_eq!(
+            style_of(&spans, "https://example.com/path"),
+            Some(URL_STYLE)
+        );
+    }
+
+    #[test]
+    fn file_line_highlighted() {
+        let base = Style::default();
+        let spans = highlight_general("error at src/main.rs:42", base);
+        assert_eq!(
+            style_of(&spans, "src/main.rs:42"),
+            Some(FILE_LINE_STYLE)
+        );
+    }
+
+    #[test]
+    fn overlapping_url_and_file_line() {
+        let base = Style::default();
+        // A URL containing a file:line pattern — URL should win (it's added first)
+        let spans = highlight_general("see https://github.com/file.rs:10 here", base);
+        // The whole URL region takes precedence
+        let url_span = spans.iter().find(|s| s.content.contains("https://"));
+        assert!(url_span.is_some());
+        assert_eq!(url_span.unwrap().style, URL_STYLE);
+    }
+
+    #[test]
+    fn plain_text_no_highlights() {
+        let base = Style::default().fg(Color::White);
+        let spans = highlight_general("just some normal text", base);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].style, base);
+    }
+
+    // --- highlight_line (integration) ---
+
+    #[test]
+    fn input_lines_not_highlighted() {
+        let base = Style::default().fg(Color::Green);
+        let spans = highlight_line(r#"{"key": "value"}"#, base, true);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].style, base);
+    }
+
+    #[test]
+    fn empty_line_returns_single_span() {
+        let base = Style::default();
+        let spans = highlight_line("", base, false);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "");
+    }
+}
