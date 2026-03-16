@@ -8,8 +8,10 @@ Unlike `asciinema` (video-like playback) or shell history (commands only), broll
 
 - **Record** terminal sessions via PTY sub-shell — works with zsh and bash
 - **Name** sessions for easy identification and lookup later
-- **Search** across all recorded sessions with prefix-matching full-text search (SQLite FTS5)
+- **Search** across all recorded sessions with prefix-matching full-text search (SQLite FTS5) — live search updates results as you type
 - **View** sessions in a scrollable TUI with timestamped, color-coded output, syntax highlighting, and in-session search (`/`)
+- **Mouse support** in both TUIs — scroll wheel navigation and click to select/position cursor
+- **Statistics** — `broll stats` shows session counts, storage size, and date range
 - **Jump** from search results directly into the full session view, scrolled to the match
 - **Extract** commands from any session as a runnable shell script
 - **Filter** sensitive content (passwords, tokens, AWS keys, JWTs) automatically
@@ -76,7 +78,10 @@ PS1="${BROLL_SESSION:+[rec: $BROLL_SESSION] }$PS1"
 ### Search output
 
 ```bash
-# Full-text search across all sessions (opens TUI)
+# Open live search TUI (type to search, results update as you type)
+broll search
+
+# Pre-fill a query (jumps straight to results)
 broll search "connection refused"
 
 # Filter by group or terminal
@@ -84,7 +89,7 @@ broll search "error" --group deploy-v2
 broll search "panic" --terminal term-a3f2
 ```
 
-The search TUI has two panels — results list on the left, preview on the right. Press `Tab` to switch focus between panels, `j/k` or arrows to navigate. Press `Enter` on any result to open the full session in view mode, scrolled to the matching output with it highlighted. Press `Esc` to return to search results.
+The search TUI has two panels — results list on the left, preview on the right. Run `broll search` without arguments to enter live search mode where results update as you type with debounced input. Press `Tab` to switch focus between panels, `j/k` or arrows to navigate. Press `Enter` on any result to open the full session in view mode, scrolled to the matching output with it highlighted. Press `/` or `i` to edit the search query. Press `Esc` to return to search results.
 
 ### View a session
 
@@ -111,6 +116,12 @@ broll extract fix-auth
 
 # Save as a script
 broll extract a3f2 --output reproduce.sh
+```
+
+### View statistics
+
+```bash
+broll stats
 ```
 
 ### Manage sessions
@@ -198,19 +209,24 @@ Use `--no-filter` to disable when you need to capture everything.
 | `Y` | Same as `yy` |
 | `3yy` | Yank 3 lines starting from cursor |
 | `V` | Enter visual line mode (select range, then `y` to yank) |
+| Mouse scroll | Scroll up/down |
+| Mouse click | Position cursor at clicked line |
 | `q` / `Esc` | Quit (or go back to search) |
 
 ### Search TUI
 
 | Key | Action |
 |-----|--------|
+| `/` / `i` | Edit search query |
 | `Tab` | Switch focus (results / preview) |
 | `j` / `Down` | Navigate results or scroll preview |
 | `k` / `Up` | Navigate results or scroll preview |
 | `Enter` | Open full session view at match |
 | `yy` | Yank first line of selected result |
 | `Y` | Yank full chunk of selected result |
-| `q` / `Esc` | Quit |
+| Mouse scroll | Scroll results or preview |
+| Mouse click | Select result |
+| `q` / `Esc` | Quit (or dismiss search input) |
 
 ## Tech stack
 
