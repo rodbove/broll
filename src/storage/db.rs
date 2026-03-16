@@ -23,6 +23,15 @@ impl Database {
         Ok(db)
     }
 
+    /// Open an in-memory database for testing.
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        let db = Self { conn };
+        db.migrate()?;
+        Ok(db)
+    }
+
     fn db_path() -> Result<PathBuf> {
         let data_dir = dirs::data_dir()
             .context("Could not determine data directory")?
@@ -528,4 +537,266 @@ struct ChunkRow {
     timestamp: String,
     content: String,
     kind: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::models::{Chunk, ChunkKind, Session};
+    use chrono::Utc;
+
+    fn make_session(id: &str, name: Option<&str>) -> Session {
+        Session {
+            id: id.to_string(),
+            name: name.map(|s| s.to_string()),
+            started_at: Utc::now(),
+            ended_at: None,
+            group: None,
+            terminal_label: "term-test".to_string(),
+            tags: vec![],
+            shell: "/bin/zsh".to_string(),
+        }
+    }
+
+    fn make_chunk(session_id: &str, content: &str, kind: ChunkKind) -> Chunk {
+        Chunk {
+            id: 0,
+            session_id: session_id.to_string(),
+            timestamp: Utc::now(),
+            content: content.to_string(),
+            kind,
+        }
+    }
+
+    // --- resolve_session_id ---
+
+    #[test]
+    fn resolve_by_exact_name() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("aaaa-bbbb-cccc-dddd", Some("my-session"));
+        db.create_session(&session).unwrap();
+
+        let resolved = db.resolve_session_id("my-session").unwrap();
+        assert_eq!(resolved, "aaaa-bbbb-cccc-dddd");
+    }
+
+    #[test]
+    fn resolve_by_id_prefix() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("abcdef12-3456-7890-abcd-ef1234567890", None);
+        db.create_session(&session).unwrap();
+
+        let resolved = db.resolve_session_id("abcdef12").unwrap();
+        assert_eq!(resolved, "abcdef12-3456-7890-abcd-ef1234567890");
+    }
+
+    #[test]
+    fn resolve_ambiguous_prefix_fails() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("abc-1111", None)).unwrap();
+        db.create_session(&make_session("abc-2222", None)).unwrap();
+
+        let result = db.resolve_session_id("abc");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Ambiguous"));
+    }
+
+    #[test]
+    fn resolve_no_match_fails() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.resolve_session_id("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No session found"));
+    }
+
+    // --- search ---
+
+    #[test]
+    fn search_returns_matching_chunks() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("sess-0001", Some("test"));
+        db.create_session(&session).unwrap();
+        db.insert_chunk(&make_chunk("sess-0001", "hello world", ChunkKind::Output))
+            .unwrap();
+        db.insert_chunk(&make_chunk("sess-0001", "goodbye moon", ChunkKind::Output))
+            .unwrap();
+
+        let hits = db.search("hello", None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].chunk.content.contains("hello"));
+        assert_eq!(hits[0].session.id, "sess-0001");
+    }
+
+    #[test]
+    fn search_no_results() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("sess-0002", None);
+        db.create_session(&session).unwrap();
+        db.insert_chunk(&make_chunk("sess-0002", "some output", ChunkKind::Output))
+            .unwrap();
+
+        let hits = db.search("nonexistent", None, None).unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_filters_by_group() {
+        let db = Database::open_in_memory().unwrap();
+        let mut s1 = make_session("sess-g1", None);
+        s1.group = Some("alpha".to_string());
+        let mut s2 = make_session("sess-g2", None);
+        s2.group = Some("beta".to_string());
+        db.create_session(&s1).unwrap();
+        db.create_session(&s2).unwrap();
+        db.insert_chunk(&make_chunk("sess-g1", "error found", ChunkKind::Output))
+            .unwrap();
+        db.insert_chunk(&make_chunk("sess-g2", "error found", ChunkKind::Output))
+            .unwrap();
+
+        let hits = db.search("error", Some("alpha"), None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session.id, "sess-g1");
+    }
+
+    // --- delete_session (transactional) ---
+
+    #[test]
+    fn delete_removes_all_related_data() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("sess-del", Some("deleteme"));
+        db.create_session(&session).unwrap();
+        db.insert_chunk(&make_chunk("sess-del", "output1", ChunkKind::Output))
+            .unwrap();
+        db.insert_chunk(&make_chunk("sess-del", "output2", ChunkKind::Output))
+            .unwrap();
+        db.add_annotation("deleteme", "a note").unwrap();
+
+        let (full_id, name) = db.delete_session("deleteme").unwrap();
+        assert_eq!(full_id, "sess-del");
+        assert_eq!(name.as_deref(), Some("deleteme"));
+
+        // Session gone
+        assert!(db.get_session_by_id("sess-del").is_err());
+        // Chunks gone
+        let chunks = db.get_session_chunks("sess-del").unwrap();
+        assert!(chunks.is_empty());
+        // Annotations gone
+        let annotations = db.get_annotations("sess-del").unwrap();
+        assert!(annotations.is_empty());
+    }
+
+    // --- import/export roundtrip ---
+
+    #[test]
+    fn export_import_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("sess-exp", Some("exported"));
+        db.create_session(&session).unwrap();
+        db.insert_chunk(&make_chunk("sess-exp", "line one", ChunkKind::Input))
+            .unwrap();
+        db.insert_chunk(&make_chunk("sess-exp", "line two output", ChunkKind::Output))
+            .unwrap();
+        db.add_annotation("exported", "test note").unwrap();
+
+        let export = db.export_session("exported").unwrap();
+        assert_eq!(export.session.id, "sess-exp");
+        assert_eq!(export.chunks.len(), 2);
+        assert_eq!(export.annotations.len(), 1);
+
+        // Import into a fresh database
+        let db2 = Database::open_in_memory().unwrap();
+        db2.import_session(&export).unwrap();
+
+        let imported = db2.get_session_by_id("sess-exp").unwrap();
+        assert_eq!(imported.name.as_deref(), Some("exported"));
+        let chunks = db2.get_session_chunks("sess-exp").unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].kind, ChunkKind::Input);
+        assert_eq!(chunks[1].kind, ChunkKind::Output);
+    }
+
+    #[test]
+    fn import_duplicate_fails() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("sess-dup", None);
+        db.create_session(&session).unwrap();
+
+        let export = SessionExport {
+            version: 1,
+            session: make_session("sess-dup", None),
+            chunks: vec![],
+            annotations: vec![],
+        };
+
+        let result = db.import_session(&export);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    // --- rename / annotate ---
+
+    #[test]
+    fn rename_session() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-ren", Some("old-name")))
+            .unwrap();
+
+        db.rename_session("old-name", "new-name").unwrap();
+        let session = db.get_session_by_id("sess-ren").unwrap();
+        assert_eq!(session.name.as_deref(), Some("new-name"));
+    }
+
+    #[test]
+    fn end_session_sets_ended_at() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("sess-end", None);
+        db.create_session(&session).unwrap();
+        assert!(db.get_session_by_id("sess-end").unwrap().ended_at.is_none());
+
+        db.end_session("sess-end").unwrap();
+        assert!(db.get_session_by_id("sess-end").unwrap().ended_at.is_some());
+    }
+
+    // --- list_sessions ---
+
+    #[test]
+    fn list_sessions_returns_all() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-l1", None)).unwrap();
+        db.create_session(&make_session("sess-l2", None)).unwrap();
+
+        let sessions = db.list_sessions(None).unwrap();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn list_sessions_filters_by_group() {
+        let db = Database::open_in_memory().unwrap();
+        let mut s1 = make_session("sess-lg1", None);
+        s1.group = Some("grp-a".to_string());
+        let s2 = make_session("sess-lg2", None);
+        db.create_session(&s1).unwrap();
+        db.create_session(&s2).unwrap();
+
+        let sessions = db.list_sessions(Some("grp-a")).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "sess-lg1");
+    }
+
+    // --- get_commands ---
+
+    #[test]
+    fn get_commands_returns_only_input_chunks() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-cmd", None)).unwrap();
+        db.insert_chunk(&make_chunk("sess-cmd", "ls -la", ChunkKind::Input))
+            .unwrap();
+        db.insert_chunk(&make_chunk("sess-cmd", "file listing...", ChunkKind::Output))
+            .unwrap();
+        db.insert_chunk(&make_chunk("sess-cmd", "pwd", ChunkKind::Input))
+            .unwrap();
+
+        let commands = db.get_commands("sess-cmd").unwrap();
+        assert_eq!(commands, vec!["ls -la", "pwd"]);
+    }
 }
