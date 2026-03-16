@@ -480,6 +480,64 @@ impl Database {
 
         parse_session(row)
     }
+
+    pub fn stats(&self) -> Result<Stats> {
+        let session_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
+        let chunk_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))?;
+        let input_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE kind = 'input'",
+            [],
+            |row| row.get(0),
+        )?;
+        let annotation_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM annotations", [], |row| row.get(0))?;
+
+        let oldest_session: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT MIN(started_at) FROM sessions",
+                [],
+                |row| row.get(0),
+            )?;
+        let newest_session: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT MAX(started_at) FROM sessions",
+                [],
+                |row| row.get(0),
+            )?;
+
+        let db_size = Self::db_path()
+            .ok()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        Ok(Stats {
+            session_count: session_count as u64,
+            chunk_count: chunk_count as u64,
+            command_count: input_count as u64,
+            annotation_count: annotation_count as u64,
+            oldest_session: oldest_session.and_then(|s| parse_dt(&s).ok()),
+            newest_session: newest_session.and_then(|s| parse_dt(&s).ok()),
+            db_size_bytes: db_size,
+        })
+    }
+}
+
+pub struct Stats {
+    pub session_count: u64,
+    pub chunk_count: u64,
+    pub command_count: u64,
+    pub annotation_count: u64,
+    pub oldest_session: Option<DateTime<Utc>>,
+    pub newest_session: Option<DateTime<Utc>>,
+    pub db_size_bytes: u64,
 }
 
 fn parse_dt(s: &str) -> Result<DateTime<Utc>> {

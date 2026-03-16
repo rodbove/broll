@@ -43,6 +43,9 @@ fn main() -> Result<()> {
         Command::View { id } => {
             tui::view::run(&id)?;
         }
+        Command::Stats => {
+            storage::show_stats()?;
+        }
         Command::Extract { id, output } => {
             storage::extract_commands(&id, output)?;
         }

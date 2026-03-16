@@ -158,6 +158,41 @@ pub fn import_session(file: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Show storage statistics.
+pub fn show_stats() -> Result<()> {
+    let db = Database::open()?;
+    let stats = db.stats()?;
+
+    println!("broll statistics");
+    println!("{}", "-".repeat(40));
+    println!("Sessions:      {}", stats.session_count);
+    println!("Commands:      {}", stats.command_count);
+    println!("Output chunks: {}", stats.chunk_count.saturating_sub(stats.command_count));
+    println!("Annotations:   {}", stats.annotation_count);
+    println!("Database size: {}", format_bytes(stats.db_size_bytes));
+
+    if let Some(oldest) = stats.oldest_session {
+        println!("Oldest:        {}", oldest.format("%Y-%m-%d %H:%M:%S"));
+    }
+    if let Some(newest) = stats.newest_session {
+        println!("Newest:        {}", newest.format("%Y-%m-%d %H:%M:%S"));
+    }
+
+    Ok(())
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
 /// Extract commands from a session and write them as a shell script.
 pub fn extract_commands(id: &str, output: Option<PathBuf>) -> Result<()> {
     let db = Database::open()?;

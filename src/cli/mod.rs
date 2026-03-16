@@ -108,6 +108,9 @@ pub enum Command {
         file: PathBuf,
     },
 
+    /// Show storage statistics
+    Stats,
+
     /// Extract commands from a session as a script
     Extract {
         /// Session ID, prefix, or name
