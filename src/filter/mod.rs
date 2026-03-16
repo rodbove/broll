@@ -18,7 +18,7 @@ static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // JWT tokens (three base64 segments separated by dots)
         r"()(eyJ[a-zA-Z0-9\-_]+\.eyJ[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+)",
         // Private key blocks
-        r"(?i)(-----BEGIN\s+\w*\s*PRIVATE KEY-----)[\s\S]*?(-----END\s+\w*\s*PRIVATE KEY-----)",
+        r"(?i)(-----BEGIN\s+\w*\s*PRIVATE KEY-----)([\s\S]*?)(-----END\s+\w*\s*PRIVATE KEY-----)",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -106,6 +106,79 @@ mod tests {
     #[test]
     fn leaves_non_secret_assignments() {
         let input = "export PATH=/usr/local/bin:/usr/bin";
+        assert_eq!(redact(input), input);
+    }
+
+    #[test]
+    fn redacts_private_key_block() {
+        let input = "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJBALRi...\n-----END RSA PRIVATE KEY-----";
+        let result = redact(input);
+        assert!(result.contains("-----BEGIN RSA PRIVATE KEY-----"));
+        assert!(result.contains("-----END RSA PRIVATE KEY-----"));
+        assert!(result.contains(REDACTED));
+        assert!(!result.contains("MIIBogIBAAJBALRi"));
+    }
+
+    #[test]
+    fn redacts_ec_private_key() {
+        let input = "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEE...\n-----END EC PRIVATE KEY-----";
+        let result = redact(input);
+        assert!(result.contains(REDACTED));
+        assert!(!result.contains("MHQCAQEE"));
+    }
+
+    #[test]
+    fn multiple_secrets_on_one_line() {
+        let input = "SECRET_KEY=abc123 API_TOKEN=def456";
+        let result = redact(input);
+        assert!(!result.contains("abc123"));
+        assert!(!result.contains("def456"));
+        assert_eq!(result.matches(REDACTED).count(), 2);
+    }
+
+    #[test]
+    fn preserves_unicode_content() {
+        let input = "echo \"こんにちは世界\"";
+        assert_eq!(redact(input), input);
+    }
+
+    #[test]
+    fn unicode_around_secret() {
+        let input = "# コメント\nexport SECRET_TOKEN=mysecretvalue123\n# 終わり";
+        let result = redact(input);
+        assert!(result.contains("コメント"));
+        assert!(result.contains("終わり"));
+        assert!(result.contains(REDACTED));
+        assert!(!result.contains("mysecretvalue123"));
+    }
+
+    #[test]
+    fn leaves_short_values_alone() {
+        // "key = short" should NOT be redacted (value too short for generic pattern)
+        let input = "key = short";
+        assert_eq!(redact(input), input);
+    }
+
+    #[test]
+    fn redacts_single_quoted_password() {
+        let input = "export PASSWORD='my secret value'";
+        let result = redact(input);
+        assert!(result.contains(REDACTED));
+        assert!(!result.contains("my secret value"));
+    }
+
+    #[test]
+    fn redacts_mongodb_connection_string() {
+        let input = "mongodb://root:p4ssw0rd@mongo.example.com:27017/admin";
+        let result = redact(input);
+        assert!(result.contains(REDACTED));
+        assert!(!result.contains("p4ssw0rd"));
+    }
+
+    #[test]
+    fn leaves_public_key_alone() {
+        // Public keys should not be redacted
+        let input = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBg...\n-----END PUBLIC KEY-----";
         assert_eq!(redact(input), input);
     }
 }
