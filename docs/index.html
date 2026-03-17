@@ -4,425 +4,50 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>b.roll — Terminal Session Recorder</title>
-  <meta name="description" content="Record, search, and replay your terminal sessions. A flight recorder for your shell.">
+  <meta name="description" content="Record, search, and replay your terminal sessions. A flight recorder for your shell with full-text search, syntax highlighting, and automatic secret filtering.">
   <meta property="og:title" content="b.roll — Terminal Session Recorder">
   <meta property="og:description" content="Record, search, and replay your terminal sessions. A flight recorder for your shell.">
   <meta property="og:type" content="website">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #0a0a0f;
-      --bg-card: #12121a;
-      --bg-terminal: #0d1117;
-      --border: #1e1e2e;
-      --text: #c9d1d9;
-      --text-muted: #6b7280;
-      --text-bright: #f0f6fc;
-      --accent: #22d3ee;
-      --accent-dim: #164e63;
-      --green: #4ade80;
-      --green-dim: #166534;
-      --yellow: #fbbf24;
-      --red: #f87171;
-      --purple: #a78bfa;
-    }
-
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.6;
-      overflow-x: hidden;
-    }
-
-    .container {
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 0 24px;
-    }
-
-    /* --- Hero --- */
-    .hero {
-      padding: 100px 0 80px;
-      text-align: center;
-      position: relative;
-    }
-
-    .hero::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 600px;
-      height: 600px;
-      background: radial-gradient(circle, rgba(34, 211, 238, 0.06) 0%, transparent 70%);
-      pointer-events: none;
-    }
-
-    h1 {
-      font-size: 56px;
-      font-weight: 700;
-      color: var(--text-bright);
-      letter-spacing: -1.5px;
-      margin-bottom: 20px;
-    }
-
-    h1 .dot {
-      color: var(--accent);
-    }
-
-    .hero p {
-      font-size: 20px;
-      color: var(--text-muted);
-      max-width: 540px;
-      margin: 0 auto 40px;
-      line-height: 1.5;
-    }
-
-    .hero-actions {
-      display: flex;
-      gap: 16px;
-      justify-content: center;
-      flex-wrap: wrap;
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 12px 28px;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 500;
-      text-decoration: none;
-      transition: all 0.2s;
-    }
-
-    .btn-primary {
-      background: var(--accent);
-      color: var(--bg);
-    }
-
-    .btn-primary:hover {
-      background: #06b6d4;
-      transform: translateY(-1px);
-    }
-
-    .btn-secondary {
-      background: var(--bg-card);
-      color: var(--text);
-      border: 1px solid var(--border);
-    }
-
-    .btn-secondary:hover {
-      border-color: var(--accent-dim);
-      color: var(--text-bright);
-    }
-
-    /* --- Install snippet --- */
-    .install-snippet {
-      margin: 48px auto 0;
-      max-width: 520px;
-    }
-
-    .install-snippet code {
-      display: block;
-      background: var(--bg-terminal);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 16px 24px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 14px;
-      color: var(--text);
-      text-align: left;
-      user-select: all;
-    }
-
-    .install-snippet code .prompt {
-      color: var(--green);
-      user-select: none;
-    }
-
-    /* --- Terminal demo --- */
-    .demo-section {
-      padding: 20px 0;
-    }
-
-    .terminal {
-      background: var(--bg-terminal);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      overflow: hidden;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      line-height: 1.7;
-      max-width: 720px;
-      margin: 0 auto;
-    }
-
-    .terminal-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 12px 16px;
-      background: var(--bg-card);
-      border-bottom: 1px solid var(--border);
-    }
-
-    .terminal-dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-    }
-
-    .terminal-dot.red { background: #ff5f57; }
-    .terminal-dot.yellow { background: #febc2e; }
-    .terminal-dot.green { background: #28c840; }
-
-    .terminal-title {
-      flex: 1;
-      text-align: center;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .terminal-body {
-      padding: 20px;
-      overflow-x: auto;
-    }
-
-    .terminal-body .line {
-      white-space: pre;
-    }
-
-    .terminal-body .prompt { color: var(--green); }
-    .terminal-body .cmd { color: var(--text-bright); font-weight: 500; }
-    .terminal-body .flag { color: var(--accent); }
-    .terminal-body .string { color: var(--yellow); }
-    .terminal-body .output { color: var(--text-muted); }
-    .terminal-body .comment { color: #4b5563; font-style: italic; }
-    .terminal-body .highlight { color: var(--accent); }
-    .terminal-body .time { color: #4b5563; }
-    .terminal-body .input-line { color: var(--green); font-weight: 500; }
-    .terminal-body .separator { color: #1e293b; }
-    .terminal-body .json-key { color: var(--accent); }
-    .terminal-body .json-string { color: var(--yellow); }
-    .terminal-body .json-number { color: var(--purple); }
-    .terminal-body .json-bool { color: var(--red); }
-    .terminal-body .json-struct { color: #4b5563; }
-    .terminal-body .log-error { color: var(--red); font-weight: 700; }
-    .terminal-body .log-warn { color: var(--yellow); font-weight: 700; }
-    .terminal-body .log-info { color: var(--green); }
-    .terminal-body .log-debug { color: #4b5563; }
-    .terminal-body .url { color: var(--accent); }
-    .terminal-body .file-ref { color: var(--yellow); }
-
-    /* --- Features --- */
-    .features {
-      padding: 80px 0;
-    }
-
-    .features h2 {
-      text-align: center;
-      font-size: 36px;
-      color: var(--text-bright);
-      margin-bottom: 16px;
-      letter-spacing: -0.5px;
-    }
-
-    .features .subtitle {
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 17px;
-      margin-bottom: 56px;
-    }
-
-    .feature-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 20px;
-    }
-
-    .feature-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 28px;
-      transition: border-color 0.2s;
-    }
-
-    .feature-card:hover {
-      border-color: var(--accent-dim);
-    }
-
-    .feature-icon {
-      font-size: 28px;
-      margin-bottom: 16px;
-      display: block;
-    }
-
-    .feature-card h3 {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text-bright);
-      margin-bottom: 8px;
-    }
-
-    .feature-card p {
-      font-size: 14px;
-      color: var(--text-muted);
-      line-height: 1.5;
-    }
-
-    .feature-card code {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      background: var(--bg-terminal);
-      padding: 2px 6px;
-      border-radius: 4px;
-      color: var(--accent);
-    }
-
-    /* --- How it works --- */
-    .how-it-works {
-      padding: 80px 0;
-    }
-
-    .how-it-works h2 {
-      text-align: center;
-      font-size: 36px;
-      color: var(--text-bright);
-      margin-bottom: 48px;
-      letter-spacing: -0.5px;
-    }
-
-    .steps {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-      max-width: 600px;
-      margin: 0 auto;
-      position: relative;
-    }
-
-    .steps::before {
-      content: '';
-      position: absolute;
-      left: 20px;
-      top: 40px;
-      bottom: 40px;
-      width: 1px;
-      background: var(--border);
-    }
-
-    .step {
-      display: flex;
-      gap: 24px;
-      align-items: flex-start;
-      padding: 20px 0;
-    }
-
-    .step-number {
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 14px;
-      font-weight: 700;
-      color: var(--accent);
-      flex-shrink: 0;
-      position: relative;
-      z-index: 1;
-    }
-
-    .step-content h3 {
-      font-size: 16px;
-      color: var(--text-bright);
-      margin-bottom: 4px;
-    }
-
-    .step-content p {
-      font-size: 14px;
-      color: var(--text-muted);
-    }
-
-    .step-content code {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      background: var(--bg-terminal);
-      padding: 2px 8px;
-      border-radius: 4px;
-      color: var(--accent);
-    }
-
-    /* --- Footer --- */
-    footer {
-      padding: 48px 0;
-      border-top: 1px solid var(--border);
-      text-align: center;
-    }
-
-    footer p {
-      color: var(--text-muted);
-      font-size: 14px;
-    }
-
-    footer a {
-      color: var(--accent);
-      text-decoration: none;
-    }
-
-    footer a:hover {
-      text-decoration: underline;
-    }
-
-    /* --- Responsive --- */
-    @media (max-width: 768px) {
-      h1 { font-size: 36px; }
-      .hero p { font-size: 17px; }
-      .feature-grid { grid-template-columns: 1fr; }
-      .hero { padding: 60px 0 40px; }
-    }
-
-    @media (max-width: 480px) {
-      h1 { font-size: 28px; }
-      .hero-actions { flex-direction: column; align-items: center; }
-    }
-  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+  <!-- Nav -->
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="#" class="nav-brand">b<span class="dot">.</span>roll</a>
+      <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">&#9776;</button>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#getting-started">Getting Started</a></li>
+        <li><a href="#commands">Commands</a></li>
+        <li><a href="#keybindings">Keybindings</a></li>
+        <li><a href="https://github.com/rodbove/broll">GitHub</a></li>
+        <li><button class="theme-toggle" id="theme-toggle" title="Toggle theme">&#127769;</button></li>
+      </ul>
+    </div>
+  </nav>
 
   <!-- Hero -->
   <section class="hero">
     <div class="container">
-      <h1>b<span class="dot">.</span>roll</h1>
-      <p>A flight recorder for your terminal. Record sessions, search output, annotate findings, extract commands.</p>
+      <h1 class="hero-title">b<span class="dot">.</span>roll</h1>
+      <p class="hero-subtitle">A flight recorder for your terminal. Record sessions, search output, annotate findings, extract commands.</p>
       <div class="hero-actions">
-        <a href="https://github.com/rodbove/broll" class="btn btn-primary">
-          View on GitHub
-        </a>
-        <a href="https://github.com/rodbove/broll#installation" class="btn btn-secondary">
-          Installation
-        </a>
+        <a href="https://github.com/rodbove/broll" class="btn btn-primary">View on GitHub</a>
+        <a href="#getting-started" class="btn btn-secondary">Get Started</a>
       </div>
       <div class="install-snippet">
-        <code><span class="prompt">$</span> cargo install broll</code>
+        <code><span class="prompt">$ </span><span class="cmd">cargo install broll</span></code>
       </div>
     </div>
   </section>
 
   <!-- Demo: Recording -->
-  <section class="demo-section">
+  <section class="section">
     <div class="container">
       <div class="terminal">
         <div class="terminal-header">
@@ -452,7 +77,7 @@
   </section>
 
   <!-- Demo: Searching -->
-  <section class="demo-section">
+  <section class="section">
     <div class="container">
       <div class="terminal">
         <div class="terminal-header">
@@ -482,58 +107,8 @@
     </div>
   </section>
 
-  <!-- Demo: Extract -->
-  <section class="demo-section">
-    <div class="container">
-      <div class="terminal">
-        <div class="terminal-header">
-          <span class="terminal-dot red"></span>
-          <span class="terminal-dot yellow"></span>
-          <span class="terminal-dot green"></span>
-          <span class="terminal-title">Extracting commands as a script</span>
-        </div>
-        <div class="terminal-body">
-<div class="line"><span class="prompt">$</span> <span class="cmd">broll extract</span> api-debug <span class="flag">--output</span> <span class="string">reproduce.sh</span></div>
-<div class="line"><span class="output">Extracted 3 commands to reproduce.sh</span></div>
-<div class="line"></div>
-<div class="line"><span class="prompt">$</span> <span class="cmd">cat</span> reproduce.sh</div>
-<div class="line"><span class="comment">#!/usr/bin/env bash</span></div>
-<div class="line"></div>
-<div class="line"><span class="cmd">curl</span> <span class="string">http://localhost:3000/health</span></div>
-<div class="line"><span class="cmd">docker logs</span> api-server <span class="flag">--tail</span> 5</div>
-<div class="line"><span class="cmd">exit</span></div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Demo: Managing sessions -->
-  <section class="demo-section">
-    <div class="container">
-      <div class="terminal">
-        <div class="terminal-header">
-          <span class="terminal-dot red"></span>
-          <span class="terminal-dot yellow"></span>
-          <span class="terminal-dot green"></span>
-          <span class="terminal-title">Managing sessions</span>
-        </div>
-        <div class="terminal-body">
-<div class="line"><span class="prompt">$</span> <span class="cmd">broll annotate</span> api-debug <span class="string">"root cause: postgres wasn't running"</span></div>
-<div class="line"><span class="output">Added note to session a3f2b1c0</span></div>
-<div class="line"></div>
-<div class="line"><span class="prompt">$</span> <span class="cmd">broll rename</span> api-debug <span class="string">"deploy-postmortem"</span></div>
-<div class="line"><span class="output">Renamed session a3f2b1c0 to "deploy-postmortem"</span></div>
-<div class="line"></div>
-<div class="line"><span class="prompt">$</span> <span class="cmd">broll delete</span> c0ff3310</div>
-<div class="line"><span class="output">Delete session c0ff3310 ? [y/N]</span> <span class="cmd">y</span></div>
-<div class="line"><span class="output">Deleted session c0ff3310</span></div>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- Demo: View with syntax highlighting -->
-  <section class="demo-section">
+  <section class="section">
     <div class="container">
       <div class="terminal">
         <div class="terminal-header">
@@ -561,82 +136,572 @@
   </section>
 
   <!-- Features -->
-  <section class="features">
+  <section class="section" id="features">
     <div class="container">
-      <h2>Built for power users</h2>
-      <p class="subtitle">Everything you need to never lose terminal output again.</p>
+      <div class="section-label">Features</div>
+      <h2 class="section-title">Built for power users</h2>
+      <p class="section-subtitle">Everything you need to never lose terminal output again.</p>
       <div class="feature-grid">
         <div class="feature-card">
-          <span class="feature-icon">&#128269;</span>
+          <div class="feature-icon">&#128269;</div>
           <h3>Full-text search</h3>
-          <p>SQLite FTS5-powered search across all your recorded sessions. Find that error message from last week in seconds.</p>
+          <p>SQLite FTS5-powered search across all your sessions. Live search mode updates results as you type with 150ms debounce.</p>
         </div>
         <div class="feature-card">
-          <span class="feature-icon">&#128274;</span>
+          <div class="feature-icon">&#128274;</div>
           <h3>Secret filtering</h3>
           <p>Automatically redacts passwords, tokens, AWS keys, JWTs, and database URLs before they hit disk. On by default.</p>
         </div>
         <div class="feature-card">
-          <span class="feature-icon">&#128196;</span>
+          <div class="feature-icon">&#128196;</div>
           <h3>Command extraction</h3>
           <p>Pull out just the commands from any session and save them as a runnable shell script. Turn debugging into documentation.</p>
         </div>
         <div class="feature-card">
-          <span class="feature-icon">&#128279;</span>
+          <div class="feature-icon">&#128279;</div>
           <h3>Session groups</h3>
-          <p>Correlate multiple terminals working on the same task. Tag sessions, group them, and search across the whole context.</p>
+          <p>Correlate multiple terminals working on the same task. Tag sessions, group them, search across the whole context.</p>
         </div>
         <div class="feature-card">
-          <span class="feature-icon">&#127991;</span>
-          <h3>Session management</h3>
-          <p>Name sessions for instant recall, add notes with <code>annotate</code>, rename them later, or delete old ones. No more remembering hex IDs.</p>
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon">&#127912;</span>
+          <div class="feature-icon">&#127912;</div>
           <h3>Syntax highlighting</h3>
-          <p>Output is automatically color-coded in the viewer. JSON keys, strings, and values get distinct colors. Log levels like <code>ERROR</code>, <code>WARN</code>, and <code>INFO</code> stand out. URLs and file:line references are highlighted too.</p>
+          <p>JSON keys, strings, and values get distinct colors. Log levels (ERROR, WARN, INFO, DEBUG) stand out. URLs and file:line references are highlighted.</p>
         </div>
         <div class="feature-card">
-          <span class="feature-icon">&#128187;</span>
+          <div class="feature-icon">&#128187;</div>
           <h3>TUI interface</h3>
-          <p>Browse sessions and search results in a keyboard-driven TUI. Search within sessions with <code>/</code>, jump from search results into full session view with Enter.</p>
+          <p>Keyboard-driven TUI with mouse support, vim-style navigation, visual line mode for yanking, and in-session search.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#127991;</div>
+          <h3>Session management</h3>
+          <p>Name sessions, add notes with <code>annotate</code>, rename, delete. No more remembering hex IDs — prefix matching works everywhere.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#128230;</div>
+          <h3>Export &amp; import</h3>
+          <p>Share sessions as portable JSON files. Versioned format with duplicate detection on import.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">&#128202;</div>
+          <h3>Statistics</h3>
+          <p>See session counts, total storage size, and date ranges at a glance with <code>broll stats</code>.</p>
         </div>
       </div>
     </div>
   </section>
 
   <!-- How it works -->
-  <section class="how-it-works">
+  <section class="section" id="how-it-works">
     <div class="container">
-      <h2>How it works</h2>
+      <div class="section-label">Under the hood</div>
+      <h2 class="section-title">How it works</h2>
       <div class="steps">
         <div class="step">
           <div class="step-number">1</div>
           <div class="step-content">
             <h3>Start recording</h3>
-            <p>Run <code>broll start</code> to spawn a sub-shell inside a PTY in your current directory. Everything flows through broll transparently.</p>
+            <p><code>broll start</code> spawns your shell inside a PTY (pseudo-terminal). Everything flows through broll transparently.</p>
           </div>
         </div>
         <div class="step">
           <div class="step-number">2</div>
           <div class="step-content">
-            <h3>Work normally</h3>
-            <p>Your shell works exactly as before. Commands and output are captured with timestamps in the background.</p>
+            <h3>Shell hooks capture commands</h3>
+            <p>Preexec/precmd hooks emit OSC markers so broll knows which lines are commands vs output. Tab completion, readline, and arrow keys all work normally.</p>
           </div>
         </div>
         <div class="step">
           <div class="step-number">3</div>
           <div class="step-content">
-            <h3>Exit to save</h3>
-            <p>Exit the shell or run <code>broll stop</code>. The session is indexed and searchable immediately.</p>
+            <h3>Output is rendered and stored</h3>
+            <p>A vt100 virtual terminal renders captured bytes to preserve column layout. Each chunk is timestamped and stored in SQLite with FTS5 indexing.</p>
           </div>
         </div>
         <div class="step">
           <div class="step-number">4</div>
           <div class="step-content">
-            <h3>Search and extract</h3>
-            <p>Use <code>broll search</code> to find output across sessions, or <code>broll extract</code> to get commands as a script.</p>
+            <h3>Secrets are redacted</h3>
+            <p>Before anything hits disk, regex patterns strip out env vars with secret-like names, bearer tokens, AWS keys, JWTs, DB connection strings, and private key blocks.</p>
           </div>
+        </div>
+        <div class="step">
+          <div class="step-number">5</div>
+          <div class="step-content">
+            <h3>Exit to finalize</h3>
+            <p>Exit the shell or run <code>broll stop</code>. The session is indexed and searchable immediately.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout" style="max-width: 640px; margin: 40px auto 0;">
+        <div class="callout-title">Data location</div>
+        <p><strong>macOS:</strong> <code>~/Library/Application Support/broll/broll.db</code></p>
+        <p><strong>Linux:</strong> <code>~/.local/share/broll/broll.db</code></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Getting Started -->
+  <section class="section" id="getting-started">
+    <div class="container">
+      <div class="section-label">Getting Started</div>
+      <h2 class="section-title">Installation</h2>
+
+      <h4 style="font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 12px;">From crates.io</h4>
+      <div class="syntax-block" style="max-width: 520px; margin-bottom: 32px;">
+<span class="opt">$</span> <span class="kw">cargo install</span> broll
+      </div>
+
+      <h4 style="font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 12px;">From source</h4>
+      <div class="syntax-block" style="max-width: 520px; margin-bottom: 32px;">
+<span class="opt">$</span> <span class="kw">git clone</span> https://github.com/rodbove/broll.git
+<span class="opt">$</span> <span class="kw">cd</span> broll
+<span class="opt">$</span> <span class="kw">cargo build</span> <span class="arg">--release</span>
+<span class="opt">$</span> <span class="kw">cp</span> target/release/broll ~/.local/bin/
+      </div>
+
+      <div class="callout" style="max-width: 520px;">
+        <div class="callout-title">Requirements</div>
+        <p>Rust 1.85+ (edition 2024). Works with zsh and bash.</p>
+      </div>
+
+      <h2 class="section-title" style="margin-top: 64px;">Quick start</h2>
+      <p class="section-subtitle">Three commands to get going.</p>
+
+      <div class="terminal" style="margin-bottom: 32px;">
+        <div class="terminal-header">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="terminal-title">Quick start</span>
+        </div>
+        <div class="terminal-body">
+<div class="line"><span class="comment"># 1. Start recording</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll start</span> <span class="flag">--name</span> <span class="string">"my-session"</span></div>
+<div class="line"><span class="output">broll: recording started (session d4e5f6a7 "my-session")</span></div>
+<div class="line"></div>
+<div class="line"><span class="comment"># 2. Work normally — everything is captured</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">echo</span> <span class="string">"hello world"</span></div>
+<div class="line"><span class="output">hello world</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">exit</span></div>
+<div class="line"></div>
+<div class="line"><span class="comment"># 3. Search or view later</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll search</span> <span class="string">"hello"</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll view</span> my-session</div>
+        </div>
+      </div>
+
+      <div class="callout" style="max-width: 720px;">
+        <div class="callout-title">Prompt indicator</div>
+        <p>When recording, the terminal tab title shows <code>broll recording - &lt;name&gt;</code> and <code>BROLL_SESSION</code> is set. Add it to your prompt:</p>
+        <div class="syntax-block" style="margin-top: 10px; font-size: 12px;">
+<span class="comment"># Add to ~/.zshrc or ~/.bashrc</span>
+<span class="kw">PS1</span>=<span class="val">"${BROLL_SESSION:+[rec: $BROLL_SESSION] }$PS1"</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Session Groups -->
+  <section class="section" id="groups">
+    <div class="container">
+      <div class="section-label">Workflow</div>
+      <h2 class="section-title">Session groups</h2>
+      <p class="section-subtitle">Correlate multiple terminals working on the same task.</p>
+
+      <div class="terminal">
+        <div class="terminal-header">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="terminal-title">Working with groups</span>
+        </div>
+        <div class="terminal-body">
+<div class="line"><span class="comment"># Terminal 1: API server</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll start</span> <span class="flag">--group</span> <span class="string">"debug-auth"</span> <span class="flag">--tag</span> <span class="string">"server"</span></div>
+<div class="line"></div>
+<div class="line"><span class="comment"># Terminal 2: curl testing</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll start</span> <span class="flag">--group</span> <span class="string">"debug-auth"</span> <span class="flag">--tag</span> <span class="string">"client"</span></div>
+<div class="line"></div>
+<div class="line"><span class="comment"># Later: search across both terminals</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll search</span> <span class="string">"401"</span> <span class="flag">--group</span> debug-auth</div>
+<div class="line"></div>
+<div class="line"><span class="comment"># List only sessions in a group</span></div>
+<div class="line"><span class="prompt">$</span> <span class="cmd">broll list</span> <span class="flag">--group</span> debug-auth</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Command Reference -->
+  <section class="section" id="commands">
+    <div class="container">
+      <div class="section-label">Reference</div>
+      <h2 class="section-title">Command reference</h2>
+      <p class="section-subtitle">Every command with all options and examples.</p>
+
+      <!-- broll start -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll start</span>
+          <span class="cmd-ref-badge">Recording</span>
+        </div>
+        <p class="cmd-ref-desc">Start recording a new session. Spawns a sub-shell inside a PTY in the current directory. Shell hooks capture commands in real-time.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll start</span> <span class="opt">[OPTIONS]</span>
+        </div>
+        <h4>Options</h4>
+        <table class="options-table">
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>-n, --name &lt;NAME&gt;</td><td>Give the session a name for easy identification and lookup</td></tr>
+            <tr><td>-t, --tag &lt;TAG&gt;</td><td>Tag the session for organization</td></tr>
+            <tr><td>-g, --group &lt;GROUP&gt;</td><td>Group ID to correlate multiple terminal sessions</td></tr>
+            <tr><td>-d, --dir &lt;PATH&gt;</td><td>Working directory for the session (defaults to current directory)</td></tr>
+            <tr><td>--no-filter</td><td>Disable sensitive content filtering</td></tr>
+          </tbody>
+        </table>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll start</span>
+<span class="opt">$</span> <span class="kw">broll start</span> <span class="arg">--name</span> <span class="val">"api-debug"</span>
+<span class="opt">$</span> <span class="kw">broll start</span> <span class="arg">--name</span> <span class="val">"fix-auth"</span> <span class="arg">--tag</span> <span class="val">"server"</span> <span class="arg">--group</span> <span class="val">"debug-auth"</span>
+<span class="opt">$</span> <span class="kw">broll start</span> <span class="arg">--dir</span> <span class="val">/var/log</span>
+<span class="opt">$</span> <span class="kw">broll start</span> <span class="arg">--no-filter</span>
+        </div>
+      </div>
+
+      <!-- broll stop -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll stop</span>
+          <span class="cmd-ref-badge">Recording</span>
+        </div>
+        <p class="cmd-ref-desc">Stop the current recording session. You can also just <code>exit</code> the shell.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll stop</span>
+        </div>
+      </div>
+
+      <!-- broll list -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll list</span>
+          <span class="cmd-ref-badge">Browse</span>
+        </div>
+        <p class="cmd-ref-desc">List all recorded sessions with their IDs, names, timestamps, and group info.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll list</span> <span class="opt">[OPTIONS]</span>
+        </div>
+        <h4>Options</h4>
+        <table class="options-table">
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>-g, --group &lt;GROUP&gt;</td><td>Filter sessions by group</td></tr>
+          </tbody>
+        </table>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll list</span>
+<span class="opt">$</span> <span class="kw">broll list</span> <span class="arg">--group</span> <span class="val">deploy-v2</span>
+        </div>
+      </div>
+
+      <!-- broll search -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll search</span>
+          <span class="cmd-ref-badge">Search</span>
+        </div>
+        <p class="cmd-ref-desc">Open the search TUI. Without arguments, enters live search mode where results update as you type (debounced 150ms). With a query, jumps straight to results. Two-panel layout: results list on the left, preview on the right.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll search</span> <span class="opt">[QUERY] [OPTIONS]</span>
+        </div>
+        <h4>Options</h4>
+        <table class="options-table">
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>-g, --group &lt;GROUP&gt;</td><td>Filter by group</td></tr>
+            <tr><td>-t, --terminal &lt;TERM&gt;</td><td>Filter by terminal label</td></tr>
+          </tbody>
+        </table>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll search</span>                              <span class="opt"># live search mode</span>
+<span class="opt">$</span> <span class="kw">broll search</span> <span class="val">"connection refused"</span>          <span class="opt"># pre-filled query</span>
+<span class="opt">$</span> <span class="kw">broll search</span> <span class="val">"error"</span> <span class="arg">--group</span> <span class="val">deploy-v2</span>    <span class="opt"># filter by group</span>
+<span class="opt">$</span> <span class="kw">broll search</span> <span class="val">"panic"</span> <span class="arg">--terminal</span> <span class="val">term-a3f2</span> <span class="opt"># filter by terminal</span>
+        </div>
+      </div>
+
+      <!-- broll view -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll view</span>
+          <span class="cmd-ref-badge">Browse</span>
+        </div>
+        <p class="cmd-ref-desc">View a recorded session in a scrollable TUI with timestamped output, syntax highlighting for JSON/log levels/URLs, in-session search, and vim-style yank. Sessions can be referenced by ID, ID prefix, or name.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll view</span> <span class="arg">&lt;ID&gt;</span>
+        </div>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll view</span> <span class="val">a3f2</span>        <span class="opt"># by ID prefix</span>
+<span class="opt">$</span> <span class="kw">broll view</span> <span class="val">api-debug</span>   <span class="opt"># by name</span>
+        </div>
+      </div>
+
+      <!-- broll extract -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll extract</span>
+          <span class="cmd-ref-badge">Export</span>
+        </div>
+        <p class="cmd-ref-desc">Extract just the commands from a session as a runnable shell script. Outputs to stdout by default.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll extract</span> <span class="arg">&lt;ID&gt;</span> <span class="opt">[OPTIONS]</span>
+        </div>
+        <h4>Options</h4>
+        <table class="options-table">
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>-o, --output &lt;FILE&gt;</td><td>Write to a file instead of stdout</td></tr>
+          </tbody>
+        </table>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll extract</span> <span class="val">a3f2</span>                       <span class="opt"># print to stdout</span>
+<span class="opt">$</span> <span class="kw">broll extract</span> <span class="val">api-debug</span> <span class="arg">--output</span> <span class="val">repro.sh</span> <span class="opt"># save as script</span>
+        </div>
+      </div>
+
+      <!-- broll annotate -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll annotate</span>
+          <span class="cmd-ref-badge">Manage</span>
+        </div>
+        <p class="cmd-ref-desc">Add a note to a recorded session. Notes are displayed at the top of the view TUI in a distinct colored section.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll annotate</span> <span class="arg">&lt;ID&gt;</span> <span class="arg">&lt;NOTE&gt;</span>
+        </div>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll annotate</span> <span class="val">a3f2</span> <span class="val">"root cause: postgres wasn't running"</span>
+<span class="opt">$</span> <span class="kw">broll annotate</span> <span class="val">fix-auth</span> <span class="val">"resolved by rotating JWT signing key"</span>
+        </div>
+      </div>
+
+      <!-- broll rename -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll rename</span>
+          <span class="cmd-ref-badge">Manage</span>
+        </div>
+        <p class="cmd-ref-desc">Rename a recorded session.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll rename</span> <span class="arg">&lt;ID&gt;</span> <span class="arg">&lt;NEW_NAME&gt;</span>
+        </div>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll rename</span> <span class="val">a3f2</span> <span class="val">"deploy-postmortem"</span>
+        </div>
+      </div>
+
+      <!-- broll delete -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll delete</span>
+          <span class="cmd-ref-badge">Manage</span>
+        </div>
+        <p class="cmd-ref-desc">Delete one or more recorded sessions and all their data. Prompts for confirmation by default.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll delete</span> <span class="arg">&lt;IDS...&gt;</span> <span class="opt">[OPTIONS]</span>
+        </div>
+        <h4>Options</h4>
+        <table class="options-table">
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>-f, --force</td><td>Skip confirmation prompt</td></tr>
+          </tbody>
+        </table>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll delete</span> <span class="val">a3f2</span>               <span class="opt"># single session, confirms</span>
+<span class="opt">$</span> <span class="kw">broll delete</span> <span class="val">a3f2 7e91 c0ff</span>    <span class="opt"># multiple at once</span>
+<span class="opt">$</span> <span class="kw">broll delete</span> <span class="val">old-session</span> <span class="arg">--force</span> <span class="opt"># skip confirmation</span>
+        </div>
+      </div>
+
+      <!-- broll export -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll export</span>
+          <span class="cmd-ref-badge">Export</span>
+        </div>
+        <p class="cmd-ref-desc">Export a session as a portable JSON file. Uses a versioned format (<code>SessionExport</code>) for compatibility.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll export</span> <span class="arg">&lt;ID&gt;</span> <span class="opt">[OPTIONS]</span>
+        </div>
+        <h4>Options</h4>
+        <table class="options-table">
+          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>-o, --output &lt;FILE&gt;</td><td>Write to a file instead of stdout</td></tr>
+          </tbody>
+        </table>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll export</span> <span class="val">api-debug</span> <span class="arg">--output</span> <span class="val">session.json</span>
+<span class="opt">$</span> <span class="kw">broll export</span> <span class="val">a3f2</span> > <span class="val">backup.json</span>
+        </div>
+      </div>
+
+      <!-- broll import -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll import</span>
+          <span class="cmd-ref-badge">Export</span>
+        </div>
+        <p class="cmd-ref-desc">Import a session from a JSON file. Duplicate sessions are detected and skipped.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll import</span> <span class="arg">&lt;FILE&gt;</span>
+        </div>
+        <h4>Examples</h4>
+        <div class="syntax-block">
+<span class="opt">$</span> <span class="kw">broll import</span> <span class="val">session.json</span>
+        </div>
+      </div>
+
+      <!-- broll stats -->
+      <div class="cmd-ref">
+        <div class="cmd-ref-header">
+          <span class="cmd-ref-name">broll stats</span>
+          <span class="cmd-ref-badge">Info</span>
+        </div>
+        <p class="cmd-ref-desc">Show storage statistics: session count, total size, and date range.</p>
+        <h4>Usage</h4>
+        <div class="syntax-block">
+<span class="kw">broll stats</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Keybindings -->
+  <section class="section" id="keybindings">
+    <div class="container">
+      <div class="section-label">Reference</div>
+      <h2 class="section-title">Keybindings</h2>
+      <p class="section-subtitle">Keyboard and mouse controls for the TUI.</p>
+
+      <div class="keybindings-grid">
+        <div class="keybindings-group">
+          <h3>View TUI</h3>
+          <table class="kb-table">
+            <tr><td><kbd>j</kbd> / <kbd>Down</kbd></td><td>Move cursor down</td></tr>
+            <tr><td><kbd>k</kbd> / <kbd>Up</kbd></td><td>Move cursor up</td></tr>
+            <tr><td><kbd>Ctrl-d</kbd> / <kbd>PgDn</kbd></td><td>Page down</td></tr>
+            <tr><td><kbd>Ctrl-u</kbd> / <kbd>PgUp</kbd></td><td>Page up</td></tr>
+            <tr><td><kbd>g</kbd> / <kbd>Home</kbd></td><td>Go to top</td></tr>
+            <tr><td><kbd>G</kbd> / <kbd>End</kbd></td><td>Go to bottom</td></tr>
+            <tr><td><kbd>/</kbd></td><td>Search within session</td></tr>
+            <tr><td><kbd>n</kbd></td><td>Next search match</td></tr>
+            <tr><td><kbd>N</kbd></td><td>Previous search match</td></tr>
+            <tr><td><kbd>yy</kbd></td><td>Yank current line</td></tr>
+            <tr><td><kbd>Y</kbd></td><td>Same as yy</td></tr>
+            <tr><td><kbd>3yy</kbd></td><td>Yank 3 lines from cursor</td></tr>
+            <tr><td><kbd>V</kbd></td><td>Visual line mode (select, then <kbd>y</kbd>)</td></tr>
+            <tr><td>Mouse scroll</td><td>Scroll up/down</td></tr>
+            <tr><td>Mouse click</td><td>Position cursor</td></tr>
+            <tr><td><kbd>q</kbd> / <kbd>Esc</kbd></td><td>Quit or go back to search</td></tr>
+          </table>
+        </div>
+        <div class="keybindings-group">
+          <h3>Search TUI</h3>
+          <table class="kb-table">
+            <tr><td><kbd>/</kbd> / <kbd>i</kbd></td><td>Edit search query</td></tr>
+            <tr><td><kbd>Tab</kbd></td><td>Switch focus (results / preview)</td></tr>
+            <tr><td><kbd>j</kbd> / <kbd>Down</kbd></td><td>Navigate or scroll</td></tr>
+            <tr><td><kbd>k</kbd> / <kbd>Up</kbd></td><td>Navigate or scroll</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>Open session at match</td></tr>
+            <tr><td><kbd>yy</kbd></td><td>Yank first line of result</td></tr>
+            <tr><td><kbd>Y</kbd></td><td>Yank full chunk</td></tr>
+            <tr><td>Mouse scroll</td><td>Scroll results or preview</td></tr>
+            <tr><td>Mouse click</td><td>Select result</td></tr>
+            <tr><td><kbd>q</kbd> / <kbd>Esc</kbd></td><td>Quit or dismiss input</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sensitive content filtering -->
+  <section class="section" id="filtering">
+    <div class="container">
+      <div class="section-label">Security</div>
+      <h2 class="section-title">Sensitive content filtering</h2>
+      <p class="section-subtitle">Filtering is on by default. Use <code>--no-filter</code> when you need to capture everything.</p>
+
+      <table class="filter-table">
+        <thead>
+          <tr><th>Pattern</th><th>Example</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Secret env vars</td><td>export API_KEY=sk-abc123</td></tr>
+          <tr><td>Bearer tokens</td><td>Authorization: Bearer eyJ...</td></tr>
+          <tr><td>AWS access keys</td><td>AKIAIOSFODNN7EXAMPLE</td></tr>
+          <tr><td>Long secret values</td><td>token: aGVsbG8gd29ybGQ...</td></tr>
+          <tr><td>Database URLs</td><td>postgres://user:pass@host/db</td></tr>
+          <tr><td>JWTs</td><td>eyJhbG...eyJzdW...signature</td></tr>
+          <tr><td>Private key blocks</td><td>-----BEGIN PRIVATE KEY-----</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Tech stack -->
+  <section class="section" id="tech-stack">
+    <div class="container">
+      <div class="section-label">Under the hood</div>
+      <h2 class="section-title">Tech stack</h2>
+      <div class="feature-grid" style="grid-template-columns: repeat(3, 1fr);">
+        <div class="feature-card">
+          <h3>Rust</h3>
+          <p>Edition 2024, requires 1.85+</p>
+        </div>
+        <div class="feature-card">
+          <h3>ratatui + crossterm</h3>
+          <p>Terminal UI framework</p>
+        </div>
+        <div class="feature-card">
+          <h3>portable-pty</h3>
+          <p>PTY sub-shell management</p>
+        </div>
+        <div class="feature-card">
+          <h3>vt100</h3>
+          <p>Virtual terminal rendering</p>
+        </div>
+        <div class="feature-card">
+          <h3>rusqlite + FTS5</h3>
+          <p>Bundled SQLite with full-text search</p>
+        </div>
+        <div class="feature-card">
+          <h3>signal-hook</h3>
+          <p>Terminal resize handling</p>
         </div>
       </div>
     </div>
@@ -645,13 +710,19 @@
   <!-- Footer -->
   <footer>
     <div class="container">
-      <p>
+      <nav class="footer-nav">
+        <a href="#features">Features</a>
+        <a href="#getting-started">Install</a>
+        <a href="#commands">Commands</a>
+        <a href="#keybindings">Keybindings</a>
         <a href="https://github.com/rodbove/broll">GitHub</a>
-        &nbsp;&middot;&nbsp;
-        MIT License
+      </nav>
+      <p>
+        <a href="https://github.com/rodbove/broll">b.roll</a> &middot; MIT License
       </p>
     </div>
   </footer>
 
+  <script src="theme.js"></script>
 </body>
 </html>
