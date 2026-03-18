@@ -17,8 +17,8 @@ pub fn list_sessions(group: Option<String>) -> Result<()> {
     }
 
     println!(
-        "{:<10} {:<16} {:<20} {:<12} {:<10} {}",
-        "ID", "NAME", "DATE", "DURATION", "GROUP", "TAGS"
+        "{:<10} {:<16} {:<20} {:<12} {:<10} TAGS",
+        "ID", "NAME", "DATE", "DURATION", "GROUP"
     );
     println!("{}", "-".repeat(86));
 

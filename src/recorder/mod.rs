@@ -363,28 +363,26 @@ pub fn start_session(
                                         }
                                         break;
                                     }
-                                } else {
-                                    if let Some(pos) = raw_buf.find(PRECMD_MARKER) {
-                                        let output: String = raw_buf.drain(..pos).collect();
-                                        raw_buf.drain(..PRECMD_MARKER.len());
+                                } else if let Some(pos) = raw_buf.find(PRECMD_MARKER) {
+                                    let output: String = raw_buf.drain(..pos).collect();
+                                    raw_buf.drain(..PRECMD_MARKER.len());
 
-                                        cmd_output_bytes.extend_from_slice(output.as_bytes());
-                                        let rendered = render_vt(&cmd_output_bytes, term_cols_storage.load(Ordering::Relaxed));
-                                        store_chunk(
-                                            &rendered,
-                                            ChunkKind::Output,
-                                            &db,
-                                            &storage_session_id,
-                                            no_filter,
-                                        );
-                                        cmd_output_bytes.clear();
-                                        state = CaptureState::Idle;
-                                    } else {
-                                        // No end marker yet — buffer the raw bytes
-                                        let buffered: String = raw_buf.drain(..).collect();
-                                        cmd_output_bytes.extend_from_slice(buffered.as_bytes());
-                                        break;
-                                    }
+                                    cmd_output_bytes.extend_from_slice(output.as_bytes());
+                                    let rendered = render_vt(&cmd_output_bytes, term_cols_storage.load(Ordering::Relaxed));
+                                    store_chunk(
+                                        &rendered,
+                                        ChunkKind::Output,
+                                        &db,
+                                        &storage_session_id,
+                                        no_filter,
+                                    );
+                                    cmd_output_bytes.clear();
+                                    state = CaptureState::Idle;
+                                } else {
+                                    // No end marker yet — buffer the raw bytes
+                                    let buffered = std::mem::take(&mut raw_buf);
+                                    cmd_output_bytes.extend_from_slice(buffered.as_bytes());
+                                    break;
                                 }
                             }
                         } else {
@@ -444,16 +442,16 @@ pub fn start_session(
     let mut buf = [0u8; 4096];
 
     loop {
-        if resize_flag.swap(false, Ordering::Relaxed) {
-            if let Ok((cols, rows)) = crossterm::terminal::size() {
-                term_cols.store(cols, Ordering::Relaxed);
-                let _ = pair.master.resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
-            }
+        if resize_flag.swap(false, Ordering::Relaxed)
+            && let Ok((cols, rows)) = crossterm::terminal::size()
+        {
+            term_cols.store(cols, Ordering::Relaxed);
+            let _ = pair.master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
         }
 
         match reader.read(&mut buf) {

@@ -117,10 +117,10 @@ impl ViewApp {
             .iter()
             .map(|line| {
                 let plain = Self::plain_text(line);
-                if plain.starts_with('[') {
-                    if let Some(pos) = plain.find("] ") {
-                        return plain[pos + 2..].to_string();
-                    }
+                if plain.starts_with('[')
+                    && let Some(pos) = plain.find("] ")
+                {
+                    return plain[pos + 2..].to_string();
                 }
                 plain
             })
@@ -349,10 +349,10 @@ fn apply_line_bg(line: &Line<'static>, bg: Color) -> Line<'static> {
 fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
     loop {
         // Expire status message after 3 seconds
-        if let Some((_, when)) = &app.status_message {
-            if when.elapsed().as_secs() >= 3 {
-                app.status_message = None;
-            }
+        if let Some((_, when)) = &app.status_message
+            && when.elapsed().as_secs() >= 3
+        {
+            app.status_message = None;
         }
 
         terminal.draw(|frame| {
@@ -388,10 +388,10 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
                 .enumerate()
                 .map(|(i, line)| {
                     // Visual selection takes highest priority
-                    if let Some((va, vb)) = visual_range {
-                        if i >= va && i <= vb {
-                            return apply_line_bg(line, Color::Rgb(60, 60, 100));
-                        }
+                    if let Some((va, vb)) = visual_range
+                        && i >= va && i <= vb
+                    {
+                        return apply_line_bg(line, Color::Rgb(60, 60, 100));
                     }
                     // Cursor line
                     if i == app.cursor && app.mode != Mode::SearchInput {
@@ -555,14 +555,14 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
                 },
                 Mode::Normal => {
                     // Handle digit prefix for count (e.g. 3yy)
-                    if let KeyCode::Char(c) = key.code {
-                        if c.is_ascii_digit() && !app.pending_y {
-                            let digit = c.to_digit(10).unwrap() as usize;
-                            app.count_prefix = Some(
-                                app.count_prefix.unwrap_or(0) * 10 + digit,
-                            );
-                            continue;
-                        }
+                    if let KeyCode::Char(c) = key.code
+                        && c.is_ascii_digit() && !app.pending_y
+                    {
+                        let digit = c.to_digit(10).unwrap() as usize;
+                        app.count_prefix = Some(
+                            app.count_prefix.unwrap_or(0) * 10 + digit,
+                        );
+                        continue;
                     }
 
                     let count = app.count_prefix.take().unwrap_or(1);
