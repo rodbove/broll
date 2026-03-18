@@ -41,6 +41,11 @@
     }
   });
 
+  // Trim whitespace from pre-formatted syntax blocks
+  document.querySelectorAll('.syntax-block').forEach(function (el) {
+    el.innerHTML = el.innerHTML.trim();
+  });
+
   // Mobile nav toggle
   var navToggle = document.getElementById('nav-toggle');
   var navLinks = document.getElementById('nav-links');
