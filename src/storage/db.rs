@@ -22,6 +22,9 @@ impl Database {
         // writes; busy_timeout retries instead of failing with SQLITE_BUSY on contention.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
+        // Enforce the declared foreign keys. Enforcement is forward-only: existing
+        // rows are not revalidated, so this is safe to enable on older databases.
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         let db = Self { conn };
         db.migrate()?;
         Ok(db)
@@ -31,6 +34,7 @@ impl Database {
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         let db = Self { conn };
         db.migrate()?;
         Ok(db)
