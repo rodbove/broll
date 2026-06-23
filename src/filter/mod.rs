@@ -44,12 +44,11 @@ pub fn redact(input: &str) -> String {
         let is_env_var = idx == 0;
         output = pattern
             .replace_all(&output, |caps: &regex::Captures| {
-                if is_env_var {
-                    if let Some(value) = caps.get(2) {
-                        if NON_SECRET_VALUE.is_match(value.as_str()) {
-                            return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
-                        }
-                    }
+                if is_env_var
+                    && let Some(value) = caps.get(2)
+                    && NON_SECRET_VALUE.is_match(value.as_str())
+                {
+                    return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
                 }
                 let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let suffix = caps.get(3).map(|m| m.as_str()).unwrap_or("");
