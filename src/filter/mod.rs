@@ -27,13 +27,30 @@ static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 
 const REDACTED: &str = "[REDACTED]";
 
+/// Values that look like config flags rather than secrets. When a secret-named
+/// assignment (e.g. `AUTH_ENABLED=true`, `TOKEN_COUNT=5`) carries one of these,
+/// redacting it would destroy harmless data, so it is left intact.
+static NON_SECRET_VALUE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)^['"]?(true|false|yes|no|on|off|none|null|\d+(?:\.\d+)?)['"]?$"#).unwrap()
+});
+
 /// Filter sensitive content from a string. Returns the filtered version.
 /// Preserves the key/label portion and only replaces the secret value.
 pub fn redact(input: &str) -> String {
     let mut output = input.to_string();
-    for pattern in SENSITIVE_PATTERNS.iter() {
+    for (idx, pattern) in SENSITIVE_PATTERNS.iter().enumerate() {
+        // The env-var assignment pattern (index 0) captures the value as group 2;
+        // skip redaction when it's a plain flag/number rather than a secret.
+        let is_env_var = idx == 0;
         output = pattern
             .replace_all(&output, |caps: &regex::Captures| {
+                if is_env_var {
+                    if let Some(value) = caps.get(2) {
+                        if NON_SECRET_VALUE.is_match(value.as_str()) {
+                            return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
+                        }
+                    }
+                }
                 let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let suffix = caps.get(3).map(|m| m.as_str()).unwrap_or("");
                 format!("{prefix}{REDACTED}{suffix}")
@@ -97,6 +114,28 @@ mod tests {
         let result = redact(input);
         assert!(result.contains(REDACTED));
         assert!(!result.contains("AKIAIOSFODNN7EXAMPLE"));
+    }
+
+    #[test]
+    fn leaves_secret_named_flags_and_numbers() {
+        // Secret-ish names with plain flag/number values are not secrets.
+        for input in [
+            "AUTH_ENABLED=true",
+            "TOKEN_COUNT=5",
+            "export PASSWORD_REQUIRED=false",
+            "API_KEY_VERSION=2.1",
+        ] {
+            assert_eq!(redact(input), input, "should not redact: {input}");
+        }
+    }
+
+    #[test]
+    fn still_redacts_real_secret_with_value() {
+        let input = "SECRET_KEY=abc123def456ghi";
+        let result = redact(input);
+        assert!(result.contains("SECRET_KEY="));
+        assert!(result.contains(REDACTED));
+        assert!(!result.contains("abc123def456ghi"));
     }
 
     #[test]
