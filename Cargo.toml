@@ -9,7 +9,7 @@ homepage = "https://github.com/rodbove/broll"
 readme = "README.md"
 keywords = ["terminal", "recorder", "tui", "shell", "session"]
 categories = ["command-line-utilities"]
-exclude = ["docs/", "test-samples/", "IDEAS.md", "install-local.sh", "CLAUDE.md"]
+exclude = ["docs/", "test-samples/", "IDEAS.md", "install-local.sh", "CLAUDE.md", "blog-posts/", "video-scripts/", "devto-post.md", "tabnews-post.md", "video-series-plan.md"]
 
 [dependencies]
 # CLI
