@@ -18,6 +18,10 @@ impl Database {
         }
         let conn = Connection::open(&path)
             .with_context(|| format!("Failed to open database at {}", path.display()))?;
+        // WAL lets a reader (search/view/list) run concurrently with the recorder's
+        // writes; busy_timeout retries instead of failing with SQLITE_BUSY on contention.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "busy_timeout", 5000)?;
         let db = Self { conn };
         db.migrate()?;
         Ok(db)
