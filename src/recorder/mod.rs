@@ -23,6 +23,105 @@ const PREEXEC_MARKER_PREFIX: &str = "\x1b]777;broll-exec;";
 const PREEXEC_MARKER_END: char = '\x07';
 const PRECMD_MARKER: &str = "\x1b]777;broll-cmd\x07";
 
+/// Strip broll OSC markers from a byte stream destined for the screen.
+///
+/// Operates on raw bytes (markers are ASCII) so multi-byte UTF-8 characters are
+/// never split and corrupted. Any trailing bytes that form a complete-or-partial
+/// marker are moved into `carry` so a marker split across two reads is still
+/// stripped instead of leaking its tail to the terminal. Returns the bytes that
+/// are safe to write now.
+fn strip_markers_for_display(combined: &[u8], carry: &mut Vec<u8>) -> Vec<u8> {
+    // Both markers begin with this common OSC prefix.
+    const COMMON: &[u8] = b"\x1b]777;broll";
+    let precmd = PRECMD_MARKER.as_bytes();
+    let exec_prefix = PREEXEC_MARKER_PREFIX.as_bytes();
+    let bel = PREEXEC_MARKER_END as u8;
+
+    let mut out = Vec::with_capacity(combined.len());
+    let mut i = 0;
+    while i < combined.len() {
+        if combined[i] != 0x1b {
+            out.push(combined[i]);
+            i += 1;
+            continue;
+        }
+        let rest = &combined[i..];
+        // Not enough bytes to know whether this ESC starts our marker.
+        if rest.len() < COMMON.len() {
+            if COMMON.starts_with(rest) {
+                carry.extend_from_slice(rest); // partial common prefix at end
+                return out;
+            }
+            out.push(combined[i]); // ESC, but not ours
+            i += 1;
+            continue;
+        }
+        if !rest.starts_with(COMMON) {
+            out.push(combined[i]); // ESC, but not ours
+            i += 1;
+            continue;
+        }
+        // rest starts with the common prefix: a precmd or exec marker (or a partial).
+        if rest.starts_with(precmd) {
+            i += precmd.len();
+            continue;
+        }
+        if rest.starts_with(exec_prefix) {
+            match rest[exec_prefix.len()..].iter().position(|&b| b == bel) {
+                Some(belpos) => {
+                    i += exec_prefix.len() + belpos + 1; // skip through BEL
+                    continue;
+                }
+                None => {
+                    carry.extend_from_slice(rest); // incomplete exec marker
+                    return out;
+                }
+            }
+        }
+        // Still a growing prefix of one of the markers: carry it.
+        if precmd.starts_with(rest) || exec_prefix.starts_with(rest) {
+            carry.extend_from_slice(rest);
+            return out;
+        }
+        // Has the common prefix but diverges from both markers: not ours, emit ESC.
+        out.push(combined[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Decode bytes as UTF-8, carrying a trailing incomplete multi-byte sequence over
+/// to the next call so characters split across read boundaries aren't turned into
+/// replacement chars. Genuinely invalid bytes are replaced and skipped.
+fn decode_with_carry(carry: &mut Vec<u8>, data: &[u8]) -> String {
+    carry.extend_from_slice(data);
+    let mut out = String::new();
+    loop {
+        match std::str::from_utf8(carry) {
+            Ok(s) => {
+                out.push_str(s);
+                carry.clear();
+                return out;
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                // carry[..valid] is valid UTF-8, so this conversion is lossless.
+                out.push_str(&String::from_utf8_lossy(&carry[..valid]));
+                match e.error_len() {
+                    Some(n) => {
+                        out.push('\u{FFFD}'); // genuinely invalid bytes
+                        carry.drain(..valid + n);
+                    }
+                    None => {
+                        carry.drain(..valid); // incomplete trailing sequence: keep it
+                        return out;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// RAII guard that restores terminal from raw mode on drop.
 struct RawModeGuard;
 
@@ -256,6 +355,8 @@ pub fn start_session(
     let storage_session_id = session_id.clone();
     let storage_handle = std::thread::spawn(move || {
         let mut raw_buf = String::new();
+        // Holds a trailing partial UTF-8 sequence split across reads.
+        let mut utf8_carry: Vec<u8> = Vec::new();
         let mut last_data_at = Instant::now();
         let mut state = CaptureState::Idle;
         // Accumulate raw bytes for current command output to render through vt100
@@ -328,7 +429,7 @@ pub fn start_session(
                 match rx.recv_timeout(INCOMPLETE_LINE_TIMEOUT) {
                     Ok(data) => {
                         last_data_at = Instant::now();
-                        let text = String::from_utf8_lossy(&data);
+                        let text = decode_with_carry(&mut utf8_carry, &data);
                         raw_buf.push_str(&text);
 
                         if has_hooks {
@@ -440,6 +541,8 @@ pub fn start_session(
     let _ = stdout.write_all(b"\r\n");
     let _ = stdout.flush();
     let mut buf = [0u8; 4096];
+    // Holds bytes of a marker split across two reads, so its tail never leaks.
+    let mut stdout_carry: Vec<u8> = Vec::new();
 
     loop {
         if resize_flag.swap(false, Ordering::Relaxed)
@@ -459,28 +562,16 @@ pub fn start_session(
             Ok(n) => {
                 let raw = &buf[..n];
 
-                // Strip markers before writing to stdout so they stay invisible
-                let text = String::from_utf8_lossy(raw);
-                if text.contains("\x1b]777;broll") {
-                    let mut cleaned = text.replace(PRECMD_MARKER, "");
-                    // Strip variable-length preexec markers: \x1b]777;broll-exec;...\x07
-                    while let Some(start) = cleaned.find(PREEXEC_MARKER_PREFIX) {
-                        if let Some(end) = cleaned[start..].find(PREEXEC_MARKER_END) {
-                            cleaned.replace_range(start..start + end + 1, "");
-                        } else {
-                            // Incomplete marker at end — truncate it
-                            cleaned.truncate(start);
-                            break;
-                        }
-                    }
-                    stdout.write_all(cleaned.as_bytes())?;
-                } else {
-                    stdout.write_all(raw)?;
-                }
-                stdout.flush()?;
-
-                // Send original bytes (with markers) to storage for processing
+                // Send original bytes (with markers) to storage for processing.
                 let _ = tx.send(raw.to_vec());
+
+                // Strip markers before writing to stdout so they stay invisible.
+                // Prepend any carried-over partial marker from the previous read.
+                let mut combined = std::mem::take(&mut stdout_carry);
+                combined.extend_from_slice(raw);
+                let cleaned = strip_markers_for_display(&combined, &mut stdout_carry);
+                stdout.write_all(&cleaned)?;
+                stdout.flush()?;
             }
             Err(_) => break,
         }
@@ -517,5 +608,86 @@ pub fn stop_session() -> Result<()> {
         Err(_) => {
             anyhow::bail!("Not inside a broll recording session.");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Feed input through the stripper one slice at a time (simulating reads) and
+    /// return the concatenated emitted output.
+    fn strip_streamed(reads: &[&[u8]]) -> Vec<u8> {
+        let mut carry = Vec::new();
+        let mut out = Vec::new();
+        for r in reads {
+            let mut combined = std::mem::take(&mut carry);
+            combined.extend_from_slice(r);
+            out.extend_from_slice(&strip_markers_for_display(&combined, &mut carry));
+        }
+        out
+    }
+
+    #[test]
+    fn strips_complete_markers_in_one_read() {
+        let input = b"before\x1b]777;broll-cmd\x07after";
+        assert_eq!(strip_streamed(&[input]), b"beforeafter");
+    }
+
+    #[test]
+    fn strips_variable_length_exec_marker() {
+        let input = b"a\x1b]777;broll-exec;ls%20-la\x07b";
+        assert_eq!(strip_streamed(&[input]), b"ab");
+    }
+
+    #[test]
+    fn precmd_marker_split_across_reads_does_not_leak() {
+        // Split right in the middle of the precmd marker.
+        let full = b"out\x1b]777;broll-cmd\x07end";
+        for split in 1..full.len() {
+            let (a, b) = full.split_at(split);
+            assert_eq!(strip_streamed(&[a, b]), b"outend", "split at {split}");
+        }
+    }
+
+    #[test]
+    fn exec_marker_split_across_reads_does_not_leak() {
+        let full = b"x\x1b]777;broll-exec;cmd\x07y";
+        for split in 1..full.len() {
+            let (a, b) = full.split_at(split);
+            assert_eq!(strip_streamed(&[a, b]), b"xy", "split at {split}");
+        }
+    }
+
+    #[test]
+    fn passes_through_unrelated_escape_sequences() {
+        let input = b"\x1b[31mred\x1b[0m";
+        assert_eq!(strip_streamed(&[input]), input);
+    }
+
+    #[test]
+    fn keeps_osc_that_is_not_a_broll_marker() {
+        let input = b"\x1b]0;window title\x07text";
+        assert_eq!(strip_streamed(&[input]), input);
+    }
+
+    #[test]
+    fn decode_with_carry_handles_split_multibyte() {
+        // "héllo" — 'é' is 0xC3 0xA9. Split between its two bytes.
+        let bytes = "héllo".as_bytes().to_vec();
+        let split = 2; // after 'h' and the first byte of 'é'
+        let (a, b) = bytes.split_at(split);
+        let mut carry = Vec::new();
+        let mut out = decode_with_carry(&mut carry, a);
+        out.push_str(&decode_with_carry(&mut carry, b));
+        assert_eq!(out, "héllo");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn decode_with_carry_replaces_invalid_bytes() {
+        let mut carry = Vec::new();
+        let out = decode_with_carry(&mut carry, &[0x68, 0xFF, 0x69]); // h <invalid> i
+        assert_eq!(out, "h\u{FFFD}i");
     }
 }
