@@ -14,7 +14,7 @@ static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Generic long hex/base64 secrets (40+ chars that look like keys)
         r#"(?i)((?:key|token|secret|password)\s*[:=]\s*)['"]?[a-zA-Z0-9+/\-_]{40,}['"]?"#,
         // Database connection strings with credentials
-        r#"(?i)((?:mysql|postgres|postgresql|mongodb|redis|amqp)://\w+:)[^@\s]+(@)"#,
+        r#"(?i)((?:mysql|postgres|postgresql|mongodb|redis|amqp)://\w+:)([^@\s]+)(@)"#,
         // JWT tokens (three base64 segments separated by dots)
         r"()(eyJ[a-zA-Z0-9\-_]+\.eyJ[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+)",
         // Private key blocks
@@ -87,6 +87,8 @@ mod tests {
         let result = redact(input);
         assert!(result.contains(REDACTED));
         assert!(!result.contains("supersecret"));
+        // The URL structure must survive: scheme, user, '@', host all intact.
+        assert_eq!(result, "DATABASE_URL=postgres://admin:[REDACTED]@localhost:5432/mydb");
     }
 
     #[test]
