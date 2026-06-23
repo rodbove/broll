@@ -221,8 +221,11 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
 
             // Place cursor in input when focused
             if app.focus == Focus::Input {
+                // cursor_pos is a byte offset; the screen column is the char count of
+                // the text before it (good for the common accented-latin case).
+                let cursor_col = app.input[..app.cursor_pos].chars().count() as u16;
                 frame.set_cursor_position((
-                    outer[0].x + 2 + app.cursor_pos as u16 + 1, // +1 for border, +2 for "> "
+                    outer[0].x + 2 + cursor_col + 1, // +1 for border, +2 for "> "
                     outer[0].y + 1,
                 ));
             }
@@ -483,13 +486,14 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                         app.last_input_time = Some(Instant::now());
                     }
                     (KeyCode::Char(c), _) => {
+                        // cursor_pos is a byte offset; advance by the char's UTF-8 width.
                         app.input.insert(app.cursor_pos, c);
-                        app.cursor_pos += 1;
+                        app.cursor_pos += c.len_utf8();
                         app.last_input_time = Some(Instant::now());
                     }
                     (KeyCode::Backspace, _) => {
-                        if app.cursor_pos > 0 {
-                            app.cursor_pos -= 1;
+                        if let Some(c) = app.input[..app.cursor_pos].chars().next_back() {
+                            app.cursor_pos -= c.len_utf8();
                             app.input.remove(app.cursor_pos);
                             app.last_input_time = Some(Instant::now());
                         }
@@ -501,10 +505,14 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                         }
                     }
                     (KeyCode::Left, _) => {
-                        app.cursor_pos = app.cursor_pos.saturating_sub(1);
+                        if let Some(c) = app.input[..app.cursor_pos].chars().next_back() {
+                            app.cursor_pos -= c.len_utf8();
+                        }
                     }
                     (KeyCode::Right, _) => {
-                        app.cursor_pos = (app.cursor_pos + 1).min(app.input.len());
+                        if let Some(c) = app.input[app.cursor_pos..].chars().next() {
+                            app.cursor_pos += c.len_utf8();
+                        }
                     }
                     _ => {}
                 }
