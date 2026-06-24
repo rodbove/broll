@@ -10,6 +10,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned for reproducible releases. Keep in sync with ci.yml.
+  RUST_TOOLCHAIN: "1.96.0"
 
 jobs:
   test:
@@ -18,12 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
         run: cargo test
@@ -35,7 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - uses: Swatinem/rust-cache@v2
 
@@ -48,8 +55,14 @@ jobs:
             exit 1
           fi
 
-      - name: Publish
-        run: cargo publish
+      - name: Publish (skip if already on crates.io)
+        run: |
+          VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')"
+          if curl -sf "https://crates.io/api/v1/crates/broll/${VERSION}" > /dev/null; then
+            echo "broll ${VERSION} is already published, skipping publish."
+          else
+            cargo publish
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
