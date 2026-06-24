@@ -416,16 +416,16 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                     }
                     Focus::Input => {}
                 },
-                MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                    // Click on results list to select an item
-                    // Results panel starts at row 3 (input bar height) + 1 (border)
-                    if mouse.row >= 4 && app.focus != Focus::Input {
-                        let clicked_index = (mouse.row as usize).saturating_sub(4);
-                        if clicked_index < app.hits.len() {
-                            app.list_state.select(Some(clicked_index));
-                            app.preview_scroll = 0;
-                            app.focus = Focus::Results;
-                        }
+                // Click on results list to select an item.
+                // Results panel starts at row 3 (input bar height) + 1 (border).
+                MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                    if mouse.row >= 4 && app.focus != Focus::Input =>
+                {
+                    let clicked_index = (mouse.row as usize).saturating_sub(4);
+                    if clicked_index < app.hits.len() {
+                        app.list_state.select(Some(clicked_index));
+                        app.preview_scroll = 0;
+                        app.focus = Focus::Results;
                     }
                 }
                 _ => {}
