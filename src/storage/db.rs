@@ -5,6 +5,9 @@ use std::path::PathBuf;
 
 use super::models::{Annotation, Chunk, ChunkKind, SearchHit, Session, SessionExport};
 
+/// Current database schema version (PRAGMA user_version). Bump when adding a migration step.
+const SCHEMA_VERSION: i64 = 2;
+
 pub struct Database {
     conn: Connection,
 }
@@ -48,10 +51,10 @@ impl Database {
     }
 
     fn migrate(&self) -> Result<()> {
-        // Skip all migration work (including the per-open pragma_table_info probe
-        // below) once the schema is known current.
+        // Skip all migration work (including the pragma_table_info probes below)
+        // once the schema is known current.
         let version: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version >= 1 {
+        if version >= SCHEMA_VERSION {
             return Ok(());
         }
 
@@ -98,17 +101,27 @@ impl Database {
             ",
         )?;
 
-        // Add name column to existing databases that don't have it yet
-        let has_name = self.conn
-            .prepare("SELECT name FROM pragma_table_info('sessions') WHERE name = 'name'")
-            .and_then(|mut s| s.query_row([], |_| Ok(())))
-            .is_ok();
-        if !has_name {
-            self.conn.execute_batch("ALTER TABLE sessions ADD COLUMN name TEXT")?;
-        }
+        // v1: add the name column to databases predating it.
+        self.add_column_if_missing("sessions", "name", "TEXT")?;
+        // v2: per-command metadata captured by the shell hooks.
+        self.add_column_if_missing("chunks", "cwd", "TEXT")?;
+        self.add_column_if_missing("chunks", "exit_code", "INTEGER")?;
 
         // Mark the schema current so future opens skip this work.
-        self.conn.pragma_update(None, "user_version", 1)?;
+        self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        Ok(())
+    }
+
+    /// Add a column to a table if it isn't already present (idempotent ALTER).
+    fn add_column_if_missing(&self, table: &str, column: &str, decl: &str) -> Result<()> {
+        let exists = self
+            .conn
+            .prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))?
+            .exists(params![column])?;
+        if !exists {
+            self.conn
+                .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+        }
         Ok(())
     }
 
@@ -278,16 +291,28 @@ impl Database {
         Ok(())
     }
 
-    pub fn insert_chunk(&self, chunk: &Chunk) -> Result<()> {
+    /// Insert a chunk and return its row id (used to later attach an exit code).
+    pub fn insert_chunk(&self, chunk: &Chunk) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO chunks (session_id, timestamp, content, kind)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO chunks (session_id, timestamp, content, kind, cwd, exit_code)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 chunk.session_id,
                 chunk.timestamp.to_rfc3339(),
                 chunk.content,
                 chunk.kind.as_str(),
+                chunk.cwd,
+                chunk.exit_code,
             ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Record the exit code of a previously inserted command (input) chunk.
+    pub fn set_chunk_exit_code(&self, chunk_id: i64, exit_code: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chunks SET exit_code = ?1 WHERE id = ?2",
+            params![exit_code, chunk_id],
         )?;
         Ok(())
     }
@@ -332,7 +357,7 @@ impl Database {
 
     pub fn get_session_chunks(&self, session_id: &str) -> Result<Vec<Chunk>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, timestamp, content, kind
+            "SELECT id, session_id, timestamp, content, kind, cwd, exit_code
              FROM chunks WHERE session_id = ?1 ORDER BY id ASC",
         )?;
 
@@ -345,6 +370,8 @@ impl Database {
                     timestamp: row.get(2)?,
                     content: row.get(3)?,
                     kind: row.get(4)?,
+                    cwd: row.get(5)?,
+                    exit_code: row.get(6)?,
                 })
             })?;
 
@@ -415,7 +442,7 @@ impl Database {
         }
 
         let sql = format!(
-            "SELECT c.id, c.session_id, c.timestamp, c.content, c.kind,
+            "SELECT c.id, c.session_id, c.timestamp, c.content, c.kind, c.cwd, c.exit_code,
                     s.id, s.started_at, s.ended_at, s.grp, s.terminal_label, s.tags, s.shell, s.name
              FROM chunks_fts fts
              JOIN chunks c ON c.id = fts.rowid
@@ -437,16 +464,18 @@ impl Database {
                     timestamp: row.get(2)?,
                     content: row.get(3)?,
                     kind: row.get(4)?,
+                    cwd: row.get(5)?,
+                    exit_code: row.get(6)?,
                 },
                 SessionRow {
-                    id: row.get(5)?,
-                    started_at: row.get(6)?,
-                    ended_at: row.get(7)?,
-                    grp: row.get(8)?,
-                    terminal_label: row.get(9)?,
-                    tags: row.get(10)?,
-                    shell: row.get(11)?,
-                    name: row.get(12)?,
+                    id: row.get(7)?,
+                    started_at: row.get(8)?,
+                    ended_at: row.get(9)?,
+                    grp: row.get(10)?,
+                    terminal_label: row.get(11)?,
+                    tags: row.get(12)?,
+                    shell: row.get(13)?,
+                    name: row.get(14)?,
                 },
             ))
         })?;
@@ -611,6 +640,8 @@ fn parse_chunk(row: ChunkRow) -> Result<Chunk> {
         session_id: row.session_id,
         content: row.content,
         kind: ChunkKind::from_str(&row.kind),
+        cwd: row.cwd,
+        exit_code: row.exit_code,
     })
 }
 
@@ -632,6 +663,8 @@ struct ChunkRow {
     timestamp: String,
     content: String,
     kind: String,
+    cwd: Option<String>,
+    exit_code: Option<i64>,
 }
 
 #[cfg(test)]
@@ -660,6 +693,8 @@ mod tests {
             timestamp: Utc::now(),
             content: content.to_string(),
             kind,
+            cwd: None,
+            exit_code: None,
         }
     }
 
@@ -762,6 +797,23 @@ mod tests {
 
         let hits = db.search("nonexistent", None, None).unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn chunk_cwd_and_exit_code_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-meta", None)).unwrap();
+
+        let mut cmd = make_chunk("sess-meta", "ls -la", ChunkKind::Input);
+        cmd.cwd = Some("/home/user/project".to_string());
+        let id = db.insert_chunk(&cmd).unwrap();
+        // Exit code arrives after the command finishes.
+        db.set_chunk_exit_code(id, 2).unwrap();
+
+        let chunks = db.get_session_chunks("sess-meta").unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].cwd.as_deref(), Some("/home/user/project"));
+        assert_eq!(chunks[0].exit_code, Some(2));
     }
 
     #[test]

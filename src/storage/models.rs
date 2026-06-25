@@ -21,6 +21,12 @@ pub struct Chunk {
     pub content: String,
     /// "input" for commands, "output" for terminal output
     pub kind: ChunkKind,
+    /// Working directory when an input command was run (None for output chunks).
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Exit code of an input command, filled in once it finishes (None for output).
+    #[serde(default)]
+    pub exit_code: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
