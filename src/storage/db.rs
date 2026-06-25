@@ -48,6 +48,13 @@ impl Database {
     }
 
     fn migrate(&self) -> Result<()> {
+        // Skip all migration work (including the per-open pragma_table_info probe
+        // below) once the schema is known current.
+        let version: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version >= 1 {
+            return Ok(());
+        }
+
         self.conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS sessions (
@@ -100,6 +107,8 @@ impl Database {
             self.conn.execute_batch("ALTER TABLE sessions ADD COLUMN name TEXT")?;
         }
 
+        // Mark the schema current so future opens skip this work.
+        self.conn.pragma_update(None, "user_version", 1)?;
         Ok(())
     }
 
@@ -372,15 +381,22 @@ impl Database {
     ) -> Result<Vec<SearchHit>> {
         let mut hits = Vec::new();
 
-        // Add prefix wildcard to each term so "Document" matches "Documents"
+        // Add prefix wildcard to each term so "Document" matches "Documents".
+        // Drop terms that are empty after cleaning so we never build a degenerate
+        // FTS expression (e.g. `MATCH ''` or `""*`), which SQLite rejects as an error.
         let fts_query: String = query
             .split_whitespace()
-            .map(|word| {
+            .filter_map(|word| {
                 let clean: String = word.chars().filter(|c| *c != '"' && *c != '*').collect();
-                format!("\"{}\"*", clean)
+                (!clean.is_empty()).then(|| format!("\"{clean}\"*"))
             })
             .collect::<Vec<_>>()
             .join(" ");
+
+        // No usable search terms: return no results rather than erroring.
+        if fts_query.is_empty() {
+            return Ok(hits);
+        }
 
         let mut where_clauses = vec!["chunks_fts MATCH ?1".to_string()];
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
@@ -746,6 +762,20 @@ mod tests {
 
         let hits = db.search("nonexistent", None, None).unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_empty_or_degenerate_query_returns_empty() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-0003", None)).unwrap();
+        db.insert_chunk(&make_chunk("sess-0003", "some output", ChunkKind::Output))
+            .unwrap();
+
+        // Empty, whitespace-only, and quote/star-only queries must not error.
+        for q in ["", "   ", "\"", "*", " \" * "] {
+            let hits = db.search(q, None, None).unwrap();
+            assert!(hits.is_empty(), "query {q:?} should return no hits");
+        }
     }
 
     #[test]
