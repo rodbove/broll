@@ -49,6 +49,19 @@ pub fn list_sessions(group: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Run a search headlessly and print the results as JSON to stdout.
+pub fn search_json(
+    query: Option<String>,
+    group: Option<String>,
+    terminal: Option<String>,
+) -> Result<()> {
+    let query = query.context("a search query is required with --format json")?;
+    let db = Database::open()?;
+    let hits = db.search(&query, group.as_deref(), terminal.as_deref())?;
+    println!("{}", serde_json::to_string_pretty(&hits)?);
+    Ok(())
+}
+
 /// Add a note to a recorded session.
 pub fn annotate_session(id: &str, note: &str) -> Result<()> {
     let db = Database::open()?;

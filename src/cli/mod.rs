@@ -1,5 +1,15 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+
+/// Output format for commands that can print machine-readable results.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
+pub enum Format {
+    /// Interactive TUI (default).
+    #[default]
+    Text,
+    /// Machine-readable JSON printed to stdout, for piping/scripting.
+    Json,
+}
 
 #[derive(Parser)]
 #[command(name = "broll", about = "Terminal session recorder with searchable output")]
@@ -43,9 +53,9 @@ pub enum Command {
         group: Option<String>,
     },
 
-    /// Search session output (opens TUI)
+    /// Search session output (opens TUI, or prints JSON with --format json)
     Search {
-        /// Text to search for (opens live search if omitted)
+        /// Text to search for (opens live search if omitted; required for --format json)
         query: Option<String>,
 
         /// Filter by group
@@ -55,6 +65,10 @@ pub enum Command {
         /// Filter by terminal label
         #[arg(short, long)]
         terminal: Option<String>,
+
+        /// Output format: text (interactive TUI) or json (pipe-friendly)
+        #[arg(short, long, value_enum, default_value_t = Format::Text)]
+        format: Format,
     },
 
     /// View a recorded session (opens TUI)

@@ -64,7 +64,7 @@ pub struct SessionExport {
 }
 
 /// A search result pointing to a specific chunk with context.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchHit {
     pub session: Session,
     pub chunk: Chunk,

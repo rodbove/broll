@@ -765,6 +765,22 @@ mod tests {
     }
 
     #[test]
+    fn search_hits_serialize_to_json() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-json", Some("jtest"))).unwrap();
+        db.insert_chunk(&make_chunk("sess-json", "needle here", ChunkKind::Output))
+            .unwrap();
+
+        let hits = db.search("needle", None, None).unwrap();
+        let json = serde_json::to_string(&hits).unwrap();
+        // Lock the JSON shape used by `broll search --format json`.
+        assert!(json.contains("\"session\""));
+        assert!(json.contains("\"chunk\""));
+        assert!(json.contains("\"id\":\"sess-json\""));
+        assert!(json.contains("needle here"));
+    }
+
+    #[test]
     fn search_empty_or_degenerate_query_returns_empty() {
         let db = Database::open_in_memory().unwrap();
         db.create_session(&make_session("sess-0003", None)).unwrap();

@@ -6,7 +6,7 @@ mod tui;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Command};
+use cli::{Cli, Command, Format};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -21,9 +21,10 @@ fn main() -> Result<()> {
         Command::List { group } => {
             storage::list_sessions(group)?;
         }
-        Command::Search { query, group, terminal } => {
-            tui::search::run(query, group, terminal)?;
-        }
+        Command::Search { query, group, terminal, format } => match format {
+            Format::Text => tui::search::run(query, group, terminal)?,
+            Format::Json => storage::search_json(query, group, terminal)?,
+        },
 
         Command::Annotate { id, note } => {
             storage::annotate_session(&id, &note)?;
