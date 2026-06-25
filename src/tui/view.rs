@@ -383,10 +383,17 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
 
             let has_search_matches = !app.matches.is_empty();
             let has_highlights = !app.highlight_lines.is_empty();
-            let display_lines: Vec<Line> = app.lines
+            // Only build the visible window. Cloning/restyling the whole buffer
+            // every frame is O(total_lines); slicing keeps it O(visible_height)
+            // regardless of session size. Rendered with no scroll offset since the
+            // slice already starts at app.scroll.
+            let start = app.scroll;
+            let end = (start + visible_height).min(total_lines);
+            let display_lines: Vec<Line> = app.lines[start..end]
                 .iter()
                 .enumerate()
-                .map(|(i, line)| {
+                .map(|(li, line)| {
+                    let i = start + li;
                     // Visual selection takes highest priority
                     if let Some((va, vb)) = visual_range
                         && i >= va && i <= vb
@@ -453,9 +460,8 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
                 .title_bottom(bottom_hint)
                 .borders(Borders::ALL);
 
-            let paragraph = Paragraph::new(display_lines)
-                .block(block)
-                .scroll((app.scroll as u16, 0));
+            // display_lines is already sliced to start at app.scroll, so no offset.
+            let paragraph = Paragraph::new(display_lines).block(block);
 
             frame.render_widget(paragraph, layout[0]);
 
@@ -620,7 +626,7 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut ViewApp) -> Result<()> {
                         }
                         (KeyCode::End, _) | (KeyCode::Char('G'), _) => {
                             app.cursor = app.lines.len().saturating_sub(1);
-                            app.scroll = app.lines.len();
+                            app.ensure_cursor_visible();
                         }
                         _ => {}
                     }
