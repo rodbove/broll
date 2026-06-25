@@ -21,7 +21,42 @@ const SESSION_ENV_VAR: &str = "BROLL_SESSION_ID";
 /// Format: \x1b]777;broll-exec;ENCODED_COMMAND\x07
 const PREEXEC_MARKER_PREFIX: &str = "\x1b]777;broll-exec;";
 const PREEXEC_MARKER_END: char = '\x07';
-const PRECMD_MARKER: &str = "\x1b]777;broll-cmd\x07";
+/// Prefix shared by every broll OSC marker.
+const MARKER_COMMON: &str = "\x1b]777;broll";
+/// Working directory of the command about to run: `\x1b]777;broll-cwd;<path>\x07`.
+const CWD_MARKER_PREFIX: &str = "\x1b]777;broll-cwd;";
+/// Exit code of the command that just finished: `\x1b]777;broll-exit;<code>\x07`.
+const EXIT_MARKER_PREFIX: &str = "\x1b]777;broll-exit;";
+/// Body of the precmd marker (the `\x1b]777;broll-cmd` part, without the BEL).
+const PRECMD_MARKER_BODY: &str = "\x1b]777;broll-cmd";
+
+/// A parsed broll marker (its BEL-stripped body classified by type).
+#[derive(Debug, PartialEq)]
+enum Marker<'a> {
+    /// Command about to run, carrying the command text.
+    Exec(&'a str),
+    /// Working directory for the next command.
+    Cwd(&'a str),
+    /// Exit code of the command that just finished.
+    Exit(&'a str),
+    /// Prompt is about to be shown (command output finished).
+    Precmd,
+}
+
+/// Classify a marker body (text between the common prefix start and the BEL).
+fn classify_marker(body: &str) -> Option<Marker<'_>> {
+    if let Some(cmd) = body.strip_prefix(PREEXEC_MARKER_PREFIX) {
+        Some(Marker::Exec(cmd))
+    } else if let Some(cwd) = body.strip_prefix(CWD_MARKER_PREFIX) {
+        Some(Marker::Cwd(cwd))
+    } else if let Some(code) = body.strip_prefix(EXIT_MARKER_PREFIX) {
+        Some(Marker::Exit(code))
+    } else if body == PRECMD_MARKER_BODY {
+        Some(Marker::Precmd)
+    } else {
+        None
+    }
+}
 
 /// Strip broll OSC markers from a byte stream destined for the screen.
 ///
@@ -31,10 +66,9 @@ const PRECMD_MARKER: &str = "\x1b]777;broll-cmd\x07";
 /// stripped instead of leaking its tail to the terminal. Returns the bytes that
 /// are safe to write now.
 fn strip_markers_for_display(combined: &[u8], carry: &mut Vec<u8>) -> Vec<u8> {
-    // Both markers begin with this common OSC prefix.
-    const COMMON: &[u8] = b"\x1b]777;broll";
-    let precmd = PRECMD_MARKER.as_bytes();
-    let exec_prefix = PREEXEC_MARKER_PREFIX.as_bytes();
+    // Every broll marker shares this OSC prefix and ends with a BEL, so we can
+    // strip them uniformly without enumerating each marker type.
+    let common = MARKER_COMMON.as_bytes();
     let bel = PREEXEC_MARKER_END as u8;
 
     let mut out = Vec::with_capacity(combined.len());
@@ -47,8 +81,8 @@ fn strip_markers_for_display(combined: &[u8], carry: &mut Vec<u8>) -> Vec<u8> {
         }
         let rest = &combined[i..];
         // Not enough bytes to know whether this ESC starts our marker.
-        if rest.len() < COMMON.len() {
-            if COMMON.starts_with(rest) {
+        if rest.len() < common.len() {
+            if common.starts_with(rest) {
                 carry.extend_from_slice(rest); // partial common prefix at end
                 return out;
             }
@@ -56,36 +90,19 @@ fn strip_markers_for_display(combined: &[u8], carry: &mut Vec<u8>) -> Vec<u8> {
             i += 1;
             continue;
         }
-        if !rest.starts_with(COMMON) {
+        if !rest.starts_with(common) {
             out.push(combined[i]); // ESC, but not ours
             i += 1;
             continue;
         }
-        // rest starts with the common prefix: a precmd or exec marker (or a partial).
-        if rest.starts_with(precmd) {
-            i += precmd.len();
-            continue;
-        }
-        if rest.starts_with(exec_prefix) {
-            match rest[exec_prefix.len()..].iter().position(|&b| b == bel) {
-                Some(belpos) => {
-                    i += exec_prefix.len() + belpos + 1; // skip through BEL
-                    continue;
-                }
-                None => {
-                    carry.extend_from_slice(rest); // incomplete exec marker
-                    return out;
-                }
+        // A broll marker: strip everything through the next BEL.
+        match rest.iter().position(|&b| b == bel) {
+            Some(belpos) => i += belpos + 1,
+            None => {
+                carry.extend_from_slice(rest); // incomplete marker, finish next read
+                return out;
             }
         }
-        // Still a growing prefix of one of the markers: carry it.
-        if precmd.starts_with(rest) || exec_prefix.starts_with(rest) {
-            carry.extend_from_slice(rest);
-            return out;
-        }
-        // Has the common prefix but diverges from both markers: not ours, emit ESC.
-        out.push(combined[i]);
-        i += 1;
     }
     out
 }
@@ -170,9 +187,15 @@ fn create_hook_rc(shell_name: &str) -> Option<tempfile::TempDir> {
                     "{}", // source user's zshrc
                     "_broll_preexec() {{\n",
                     "  local cmd=\"${{1//$'\\a'/}}\"\n",
+                    "  printf '\\e]777;broll-cwd;%s\\a' \"${{PWD//$'\\a'/}}\"\n",
                     "  printf '\\e]777;broll-exec;%s\\a' \"$cmd\"\n",
                     "}}\n",
-                    "_broll_precmd() {{ printf '\\e]777;broll-cmd\\a'; }}\n",
+                    // Capture $? first; it is the exit code of the command that just ran.
+                    "_broll_precmd() {{\n",
+                    "  local ec=$?\n",
+                    "  printf '\\e]777;broll-exit;%d\\a' \"$ec\"\n",
+                    "  printf '\\e]777;broll-cmd\\a'\n",
+                    "}}\n",
                     "autoload -Uz add-zsh-hook\n",
                     "add-zsh-hook preexec _broll_preexec\n",
                     "add-zsh-hook precmd _broll_precmd\n",
@@ -198,12 +221,16 @@ fn create_hook_rc(shell_name: &str) -> Option<tempfile::TempDir> {
                     "{}", // source user's bashrc
                     "_broll_last_hist=\"\"\n",
                     "_broll_precmd() {{\n",
+                    // Capture $? first; any other command below would clobber it.
+                    "  local ec=$?\n",
                     "  local cmd\n",
                     "  cmd=$(fc -ln -1 2>/dev/null | sed 's/^[[:space:]]*//')\n",
                     "  cmd=\"${{cmd//$'\\a'/}}\"\n",
                     "  if [[ -n \"$cmd\" && \"$cmd\" != \"$_broll_last_hist\" ]]; then\n",
                     "    _broll_last_hist=\"$cmd\"\n",
+                    "    printf '\\e]777;broll-cwd;%s\\a' \"${{PWD//$'\\a'/}}\"\n",
                     "    printf '\\e]777;broll-exec;%s\\a' \"$cmd\"\n",
+                    "    printf '\\e]777;broll-exit;%d\\a' \"$ec\"\n",
                     "  fi\n",
                     "  printf '\\e]777;broll-cmd\\a'\n",
                     "}}\n",
@@ -361,6 +388,10 @@ pub fn start_session(
         let mut state = CaptureState::Idle;
         // Accumulate raw bytes for current command output to render through vt100
         let mut cmd_output_bytes: Vec<u8> = Vec::new();
+        // Working directory for the next command, stashed from a cwd marker.
+        let mut pending_cwd: Option<String> = None;
+        // Row id of the command (input) chunk currently running, for exit-code update.
+        let mut current_command_id: Option<i64> = None;
 
         /// Render raw terminal bytes through a virtual terminal and return plain text lines.
         fn render_vt(raw: &[u8], term_cols: u16) -> String {
@@ -368,7 +399,10 @@ pub fn start_session(
             // This avoids the previous hardcoded 500-row limit that silently lost output.
             let newline_count = raw.iter().filter(|&&b| b == b'\n').count();
             let estimated_rows = (newline_count + 1).max(500) as u16;
-            let mut parser = vt100::Parser::new(estimated_rows, term_cols, 0);
+            // vt100 panics on a zero-width screen; a terminal that reports no size
+            // (or a PTY with no winsize) must not take the capture thread down.
+            let cols = term_cols.max(1);
+            let mut parser = vt100::Parser::new(estimated_rows, cols, 0);
             parser.process(raw);
             let screen = parser.screen();
             let mut lines: Vec<String> = Vec::new();
@@ -396,7 +430,13 @@ pub fn start_session(
                 || trimmed.starts_with("Deleting expired sessions...")
         }
 
-        let store_chunk = |content_raw: &str, kind: ChunkKind, db: &Database, sid: &str, no_filt: bool| {
+        let store_chunk = |content_raw: &str,
+                           kind: ChunkKind,
+                           cwd: Option<String>,
+                           db: &Database,
+                           sid: &str,
+                           no_filt: bool|
+         -> Option<i64> {
             let content: String = content_raw
                 .lines()
                 .filter(|l| !is_shell_noise(l))
@@ -409,7 +449,7 @@ pub fn start_session(
             };
             let trimmed = content.trim();
             if trimmed.is_empty() {
-                return;
+                return None;
             }
 
             let chunk = Chunk {
@@ -418,9 +458,15 @@ pub fn start_session(
                 timestamp: Utc::now(),
                 content,
                 kind,
+                cwd,
+                exit_code: None,
             };
-            if let Err(e) = db.insert_chunk(&chunk) {
-                eprintln!("broll: failed to store chunk: {e}");
+            match db.insert_chunk(&chunk) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    eprintln!("broll: failed to store chunk: {e}");
+                    None
+                }
             }
         };
 
@@ -433,57 +479,88 @@ pub fn start_session(
                         raw_buf.push_str(&text);
 
                         if has_hooks {
-                            // Process buffer looking for markers
+                            // Process the buffer one marker at a time. Bytes before a
+                            // marker are command output while Capturing, prompt noise
+                            // while Idle. A trailing (possibly partial) marker is kept
+                            // for the next read so it is never split or leaked.
                             loop {
-                                if state == CaptureState::Idle {
-                                    // Look for preexec marker: \x1b]777;broll-exec;ENCODED\x07
-                                    if let Some(pos) = raw_buf.find(PREEXEC_MARKER_PREFIX) {
-                                        let after_prefix = pos + PREEXEC_MARKER_PREFIX.len();
-                                        // Find the BEL terminator
-                                        if let Some(end) = raw_buf[after_prefix..].find(PREEXEC_MARKER_END) {
-                                            let command = raw_buf[after_prefix..after_prefix + end].to_string();
-                                            // Store the command as input
+                                let Some(start) = raw_buf.find(MARKER_COMMON) else {
+                                    // No marker present: flush all but a small tail that
+                                    // could be the start of a marker split across reads.
+                                    let keep = MARKER_COMMON.len();
+                                    let flush_to = raw_buf.len().saturating_sub(keep);
+                                    if flush_to > 0 {
+                                        if state == CaptureState::Capturing {
+                                            cmd_output_bytes
+                                                .extend_from_slice(&raw_buf.as_bytes()[..flush_to]);
+                                        }
+                                        raw_buf.drain(..flush_to);
+                                    }
+                                    break;
+                                };
+
+                                let Some(bel_rel) = raw_buf[start..].find(PREEXEC_MARKER_END) else {
+                                    // Marker started but not yet terminated: emit the
+                                    // output before it and keep the partial marker.
+                                    if state == CaptureState::Capturing {
+                                        cmd_output_bytes.extend_from_slice(&raw_buf.as_bytes()[..start]);
+                                    }
+                                    raw_buf.drain(..start);
+                                    break;
+                                };
+                                let bel = start + bel_rel;
+
+                                // Output before the marker (ignored while Idle).
+                                if state == CaptureState::Capturing {
+                                    cmd_output_bytes.extend_from_slice(&raw_buf.as_bytes()[..start]);
+                                }
+
+                                let body = raw_buf[start..bel].to_string();
+                                raw_buf.drain(..bel + 1); // drain through the BEL
+
+                                match classify_marker(&body) {
+                                    Some(Marker::Cwd(cwd)) => {
+                                        pending_cwd = Some(cwd.to_string());
+                                    }
+                                    Some(Marker::Exec(cmd)) => {
+                                        current_command_id = store_chunk(
+                                            cmd,
+                                            ChunkKind::Input,
+                                            pending_cwd.take(),
+                                            &db,
+                                            &storage_session_id,
+                                            no_filter,
+                                        );
+                                        cmd_output_bytes.clear();
+                                        state = CaptureState::Capturing;
+                                    }
+                                    Some(Marker::Exit(code)) => {
+                                        if let (Some(cid), Ok(ec)) =
+                                            (current_command_id, code.trim().parse::<i64>())
+                                        {
+                                            let _ = db.set_chunk_exit_code(cid, ec);
+                                        }
+                                    }
+                                    Some(Marker::Precmd) => {
+                                        if state == CaptureState::Capturing {
+                                            let rendered = render_vt(
+                                                &cmd_output_bytes,
+                                                term_cols_storage.load(Ordering::Relaxed),
+                                            );
                                             store_chunk(
-                                                &command,
-                                                ChunkKind::Input,
+                                                &rendered,
+                                                ChunkKind::Output,
+                                                None,
                                                 &db,
                                                 &storage_session_id,
                                                 no_filter,
                                             );
-                                            raw_buf.drain(..after_prefix + end + 1);
-                                            state = CaptureState::Capturing;
                                             cmd_output_bytes.clear();
-                                        } else {
-                                            // BEL not yet received — keep buffering
-                                            break;
                                         }
-                                    } else {
-                                        let keep = PREEXEC_MARKER_PREFIX.len();
-                                        if raw_buf.len() > keep {
-                                            raw_buf.drain(..raw_buf.len() - keep);
-                                        }
-                                        break;
+                                        state = CaptureState::Idle;
+                                        current_command_id = None;
                                     }
-                                } else if let Some(pos) = raw_buf.find(PRECMD_MARKER) {
-                                    let output: String = raw_buf.drain(..pos).collect();
-                                    raw_buf.drain(..PRECMD_MARKER.len());
-
-                                    cmd_output_bytes.extend_from_slice(output.as_bytes());
-                                    let rendered = render_vt(&cmd_output_bytes, term_cols_storage.load(Ordering::Relaxed));
-                                    store_chunk(
-                                        &rendered,
-                                        ChunkKind::Output,
-                                        &db,
-                                        &storage_session_id,
-                                        no_filter,
-                                    );
-                                    cmd_output_bytes.clear();
-                                    state = CaptureState::Idle;
-                                } else {
-                                    // No end marker yet — buffer the raw bytes
-                                    let buffered = std::mem::take(&mut raw_buf);
-                                    cmd_output_bytes.extend_from_slice(buffered.as_bytes());
-                                    break;
+                                    None => {} // unknown broll marker: already drained
                                 }
                             }
                         } else {
@@ -504,6 +581,7 @@ pub fn start_session(
                                     store_chunk(
                                         &rendered,
                                         ChunkKind::Output,
+                                        None,
                                         &db,
                                         &storage_session_id,
                                         no_filter,
@@ -522,6 +600,7 @@ pub fn start_session(
                             store_chunk(
                                 &rendered,
                                 ChunkKind::Output,
+                                None,
                                 &db,
                                 &storage_session_id,
                                 no_filter,
@@ -657,6 +736,34 @@ mod tests {
             let (a, b) = full.split_at(split);
             assert_eq!(strip_streamed(&[a, b]), b"xy", "split at {split}");
         }
+    }
+
+    #[test]
+    fn strips_cwd_and_exit_markers() {
+        let input = b"\x1b]777;broll-cwd;/home/u\x07ls\x1b]777;broll-exit;0\x07";
+        assert_eq!(strip_streamed(&[input]), b"ls");
+    }
+
+    #[test]
+    fn cwd_and_exit_markers_split_across_reads_do_not_leak() {
+        for full in [
+            b"a\x1b]777;broll-cwd;/tmp/x\x07b".as_slice(),
+            b"a\x1b]777;broll-exit;127\x07b".as_slice(),
+        ] {
+            for split in 1..full.len() {
+                let (x, y) = full.split_at(split);
+                assert_eq!(strip_streamed(&[x, y]), b"ab", "split at {split}");
+            }
+        }
+    }
+
+    #[test]
+    fn classify_marker_recognizes_each_type() {
+        assert_eq!(classify_marker("\x1b]777;broll-exec;ls -la"), Some(Marker::Exec("ls -la")));
+        assert_eq!(classify_marker("\x1b]777;broll-cwd;/home"), Some(Marker::Cwd("/home")));
+        assert_eq!(classify_marker("\x1b]777;broll-exit;0"), Some(Marker::Exit("0")));
+        assert_eq!(classify_marker("\x1b]777;broll-cmd"), Some(Marker::Precmd));
+        assert_eq!(classify_marker("\x1b]777;broll-bogus"), None);
     }
 
     #[test]
