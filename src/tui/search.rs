@@ -529,13 +529,8 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                     if let Some(hit) = app.selected_hit() {
                         let clean = strip_ansi_escapes::strip_str(&hit.chunk.content);
                         let first_line = clean.lines().next().unwrap_or("").to_string();
-                        if clipboard::copy_to_clipboard(&first_line) {
-                            app.status_message =
-                                Some(("1 line yanked".to_string(), Instant::now()));
-                        } else {
-                            app.status_message =
-                                Some(("clipboard unavailable".to_string(), Instant::now()));
-                        }
+                        let msg = clipboard::yank_status(&first_line, 1);
+                        app.status_message = Some((msg, Instant::now()));
                     }
                     continue;
                 }
@@ -565,18 +560,8 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                         let clean = strip_ansi_escapes::strip_str(&hit.chunk.content);
                         let text = clean.trim().to_string();
                         let line_count = text.lines().count();
-                        if clipboard::copy_to_clipboard(&text) {
-                            app.status_message = Some((
-                                format!(
-                                    "{line_count} line{} yanked",
-                                    if line_count == 1 { "" } else { "s" }
-                                ),
-                                Instant::now(),
-                            ));
-                        } else {
-                            app.status_message =
-                                Some(("clipboard unavailable".to_string(), Instant::now()));
-                        }
+                        let msg = clipboard::yank_status(&text, line_count);
+                        app.status_message = Some((msg, Instant::now()));
                     }
                 }
                 (KeyCode::Tab, _) => {
