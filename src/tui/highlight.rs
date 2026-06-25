@@ -114,9 +114,15 @@ fn highlight_json(text: &str) -> Vec<Span<'static>> {
                     i += 1;
                 }
                 let word = &text[start..i];
-                let style = if JSON_BOOL_NULL_RE.is_match(word) {
+                // Require the pattern to span the entire token, so values like
+                // `true.foo` or `3.14abc` are not mis-styled from a partial match.
+                let spans_whole = |re: &Regex| {
+                    re.find(word)
+                        .is_some_and(|m| m.start() == 0 && m.end() == word.len())
+                };
+                let style = if spans_whole(&JSON_BOOL_NULL_RE) {
                     BOOL_NULL_STYLE
-                } else if JSON_NUMBER_RE.is_match(word) {
+                } else if spans_whole(&JSON_NUMBER_RE) {
                     NUMBER_STYLE
                 } else {
                     STRUCTURAL_STYLE
@@ -283,6 +289,14 @@ mod tests {
         let spans = highlight_json(r#"{"a": true, "b": null}"#);
         assert_eq!(style_of(&spans, "true"), Some(BOOL_NULL_STYLE));
         assert_eq!(style_of(&spans, "null"), Some(BOOL_NULL_STYLE));
+    }
+
+    #[test]
+    fn json_partial_token_not_styled_as_bool_or_number() {
+        // A token that merely starts with a bool/number must not be highlighted.
+        let spans = highlight_json(r#"{"a": true.foo, "b": 3.14abc}"#);
+        assert_eq!(style_of(&spans, "true.foo"), Some(STRUCTURAL_STYLE));
+        assert_eq!(style_of(&spans, "3.14abc"), Some(STRUCTURAL_STYLE));
     }
 
     #[test]
