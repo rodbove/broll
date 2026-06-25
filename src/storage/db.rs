@@ -226,30 +226,38 @@ impl Database {
             .prepare("SELECT 1 FROM sessions WHERE id = ?1")?
             .exists(params![export.session.id])?;
         if exists {
-            anyhow::bail!(
-                "Session {} already exists in the database",
-                &export.session.id[..8]
-            );
+            // id comes from an external file, so slice safely on a char boundary.
+            let short = export.session.id.get(..8).unwrap_or(&export.session.id);
+            anyhow::bail!("Session {} already exists in the database", short);
         }
 
-        self.create_session(&export.session)?;
+        // Import the session, its chunks, and annotations atomically so a failure
+        // partway through doesn't leave a half-imported session behind.
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<()> {
+            self.create_session(&export.session)?;
+            for chunk in &export.chunks {
+                self.insert_chunk(chunk)?;
+            }
+            for ann in &export.annotations {
+                self.conn.execute(
+                    "INSERT INTO annotations (session_id, created_at, content) VALUES (?1, ?2, ?3)",
+                    params![ann.session_id, ann.created_at.to_rfc3339(), ann.content],
+                )?;
+            }
+            Ok(())
+        })();
 
-        for chunk in &export.chunks {
-            self.insert_chunk(chunk)?;
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
         }
-
-        for ann in &export.annotations {
-            self.conn.execute(
-                "INSERT INTO annotations (session_id, created_at, content) VALUES (?1, ?2, ?3)",
-                params![
-                    ann.session_id,
-                    ann.created_at.to_rfc3339(),
-                    ann.content,
-                ],
-            )?;
-        }
-
-        Ok(())
     }
 
     pub fn end_session(&self, session_id: &str) -> Result<()> {
@@ -438,16 +446,21 @@ impl Database {
     }
 
     pub fn resolve_session_id(&self, prefix: &str) -> Result<String> {
-        // First try exact name match
+        // First try exact name match. Names aren't unique, so fetch up to 2 to
+        // detect collisions instead of silently returning an arbitrary match.
         let mut name_stmt = self
             .conn
-            .prepare("SELECT id FROM sessions WHERE name = ?1 LIMIT 1")?;
+            .prepare("SELECT id FROM sessions WHERE name = ?1 LIMIT 2")?;
         let name_ids: Vec<String> = name_stmt
             .query_map(params![prefix], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
-        if name_ids.len() == 1 {
-            return Ok(name_ids.into_iter().next().unwrap());
+        match name_ids.len() {
+            1 => return Ok(name_ids.into_iter().next().unwrap()),
+            n if n > 1 => {
+                anyhow::bail!("Ambiguous session name '{prefix}', use the session id instead")
+            }
+            _ => {} // no name match: fall back to id-prefix matching
         }
 
         // Fall back to ID prefix match
@@ -663,6 +676,36 @@ mod tests {
         db.create_session(&make_session("abc-2222", None)).unwrap();
 
         let result = db.resolve_session_id("abc");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Ambiguous"));
+    }
+
+    #[test]
+    fn import_short_id_does_not_panic() {
+        use crate::storage::models::SessionExport;
+        // An id shorter than 8 bytes would panic the old `id[..8]` slice on the
+        // duplicate-detection path.
+        let export = SessionExport {
+            version: 1,
+            session: make_session("ab", Some("short")),
+            chunks: vec![],
+            annotations: vec![],
+        };
+        let db = Database::open_in_memory().unwrap();
+        db.import_session(&export).unwrap();
+        // Re-importing must error gracefully, not panic.
+        let result = db.import_session(&export);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn resolve_ambiguous_name_fails() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("id-1111", Some("dup"))).unwrap();
+        db.create_session(&make_session("id-2222", Some("dup"))).unwrap();
+
+        let result = db.resolve_session_id("dup");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Ambiguous"));
     }
