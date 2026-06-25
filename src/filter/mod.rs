@@ -10,7 +10,7 @@ static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Bearer tokens
         r"(?i)(bearer\s+)[a-zA-Z0-9\-._~+/]+=*",
         // AWS access keys
-        r"()((?:AKIA|ASIA)[A-Z0-9]{16})",
+        r"()(\b(?:AKIA|ASIA)[A-Z0-9]{16}\b)",
         // Generic long hex/base64 secrets (40+ chars that look like keys)
         r#"(?i)((?:key|token|secret|password)\s*[:=]\s*)['"]?[a-zA-Z0-9+/\-_]{40,}['"]?"#,
         // Database connection strings with credentials
@@ -113,6 +113,16 @@ mod tests {
         let result = redact(input);
         assert!(result.contains(REDACTED));
         assert!(!result.contains("AKIAIOSFODNN7EXAMPLE"));
+    }
+
+    #[test]
+    fn aws_key_requires_word_boundary() {
+        // A real key on a boundary is redacted; an AKIA-prefixed substring inside a
+        // longer alphanumeric blob is not a key and must be left intact.
+        let key = redact("key=AKIAIOSFODNN7EXAMPLE");
+        assert!(!key.contains("AKIAIOSFODNN7EXAMPLE"));
+        let embedded = "XAKIAIOSFODNN7EXAMPLE0000";
+        assert_eq!(redact(embedded), embedded);
     }
 
     #[test]
