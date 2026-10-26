@@ -74,4 +74,21 @@ pub struct SessionExport {
 pub struct SearchHit {
     pub session: Session,
     pub chunk: Chunk,
+    pub cwd: Option<String>,
+    pub exit_code: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SearchFilter {
+    pub group: Option<String>,
+    pub terminal: Option<String>,
+    pub failed: bool,
+    pub cwd: Option<String>,
+    pub since: Option<DateTime<Utc>>,
+}
+
+impl SearchFilter {
+    pub fn has_metadata_filters(&self) -> bool {
+        self.failed || self.cwd.is_some() || self.since.is_some()
+    }
 }

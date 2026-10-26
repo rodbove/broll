@@ -12,7 +12,7 @@ use crate::storage::models::{Chunk, ChunkKind, Session};
 use crate::storage::Database;
 
 /// Marker env var so we can detect nested sessions and stop gracefully.
-const SESSION_ENV_VAR: &str = "BROLL_SESSION_ID";
+pub const SESSION_ENV_VAR: &str = "BROLL_SESSION_ID";
 
 /// Unique markers emitted by shell hooks to delimit command output.
 /// Uses OSC sequences that terminals silently ignore.

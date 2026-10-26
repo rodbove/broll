@@ -13,7 +13,7 @@ use ratatui::{
 use std::time::{Duration, Instant};
 
 use super::clipboard;
-use crate::storage::models::SearchHit;
+use crate::storage::models::{SearchFilter, SearchHit};
 use crate::storage::Database;
 
 #[derive(PartialEq)]
@@ -34,10 +34,9 @@ struct SearchApp {
     list_state: ListState,
     input: String,
     cursor_pos: usize,
-    last_searched: String,
+    last_searched: Option<String>,
     last_input_time: Option<Instant>,
-    group: Option<String>,
-    terminal_filter: Option<String>,
+    filter: SearchFilter,
     preview_scroll: usize,
     focus: Focus,
     pending_y: bool,
@@ -47,12 +46,7 @@ struct SearchApp {
 const DEBOUNCE_MS: u64 = 150;
 
 impl SearchApp {
-    fn new(
-        db: Database,
-        query: Option<String>,
-        group: Option<String>,
-        terminal_filter: Option<String>,
-    ) -> Self {
+    fn new(db: Database, query: Option<String>, filter: SearchFilter) -> Self {
         let input = query.unwrap_or_default();
         Self {
             db,
@@ -60,10 +54,9 @@ impl SearchApp {
             list_state: ListState::default(),
             cursor_pos: input.len(),
             input,
-            last_searched: String::new(),
+            last_searched: None,
             last_input_time: None,
-            group,
-            terminal_filter,
+            filter,
             preview_scroll: 0,
             focus: Focus::Input,
             pending_y: false,
@@ -72,23 +65,19 @@ impl SearchApp {
     }
 
     fn execute_search(&mut self) {
-        let query = self.input.trim();
-        if query.is_empty() {
+        let query = self.input.trim().to_string();
+        if !self.has_criteria() {
             self.hits.clear();
             self.list_state.select(None);
-            self.last_searched.clear();
+            self.last_searched = None;
             return;
         }
-        if query == self.last_searched {
+        if self.last_searched.as_deref() == Some(query.as_str()) {
             return;
         }
-        self.last_searched = query.to_string();
-        match self.db.search(
-            query,
-            self.group.as_deref(),
-            self.terminal_filter.as_deref(),
-        ) {
+        match self.db.search(&query, &self.filter) {
             Ok(hits) => {
+                self.last_searched = Some(query);
                 self.hits = hits;
                 if self.hits.is_empty() {
                     self.list_state.select(None);
@@ -101,6 +90,31 @@ impl SearchApp {
             }
         }
         self.preview_scroll = 0;
+    }
+
+    fn has_criteria(&self) -> bool {
+        !self.input.trim().is_empty() || self.filter.has_metadata_filters()
+    }
+
+    fn filter_label(&self) -> String {
+        let mut parts = Vec::new();
+        if self.filter.failed {
+            parts.push("failed".to_string());
+        }
+        if let Some(cwd) = &self.filter.cwd {
+            parts.push(format!("cwd: {}", super::display_path(cwd)));
+        }
+        if let Some(since) = self.filter.since {
+            parts.push(format!(
+                "since: {}",
+                since.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")
+            ));
+        }
+        if parts.is_empty() {
+            " Search ".to_string()
+        } else {
+            format!(" Search [{}] ", parts.join(", "))
+        }
     }
 
     fn selected_hit(&self) -> Option<&SearchHit> {
@@ -134,18 +148,14 @@ impl SearchApp {
     }
 }
 
-pub fn run(
-    query: Option<String>,
-    group: Option<String>,
-    terminal_filter: Option<String>,
-) -> Result<()> {
+pub fn run(query: Option<String>, filter: SearchFilter) -> Result<()> {
     let db = Database::open()?;
     let mut terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
-    let mut app = SearchApp::new(db, query, group, terminal_filter);
+    let mut app = SearchApp::new(db, query, filter);
 
     // If an initial query was provided, run the search immediately
-    if !app.input.is_empty() {
+    if app.has_criteria() {
         app.execute_search();
         // Start in results mode if we have results
         if !app.hits.is_empty() {
@@ -209,7 +219,7 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                 Style::default()
             };
             let input_block = Block::default()
-                .title(" Search ")
+                .title(app.filter_label())
                 .borders(Borders::ALL)
                 .border_style(input_border_style);
             let input_widget = Paragraph::new(Line::from(vec![
@@ -248,14 +258,23 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                     let clean = strip_ansi_escapes::strip_str(&hit.chunk.content);
                     let preview: String = clean.chars().take(60).collect();
                     let preview = preview.replace('\n', " ");
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("[{session_label}] "),
-                            Style::default().fg(Color::Cyan),
-                        ),
-                        Span::styled(format!("{time} "), Style::default().fg(Color::DarkGray)),
-                        Span::raw(preview),
-                    ]))
+                    let mut spans = Vec::new();
+                    if let Some(code) = hit.exit_code.filter(|c| *c != 0) {
+                        spans.push(Span::styled(
+                            format!("✗{code} "),
+                            Style::default().fg(Color::Red),
+                        ));
+                    }
+                    spans.push(Span::styled(
+                        format!("[{session_label}] "),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                    spans.push(Span::styled(
+                        format!("{time} "),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    spans.push(Span::raw(preview));
+                    ListItem::new(Line::from(spans))
                 })
                 .collect();
 
@@ -264,7 +283,7 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
             } else {
                 format!("{}", app.hits.len())
             };
-            let list_title = if app.input.trim().is_empty() {
+            let list_title = if !app.has_criteria() {
                 " Results ".to_string()
             } else {
                 format!(" Results ({}) ", count_display)
@@ -318,6 +337,25 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                     ]));
                 }
 
+                if let Some(ref cwd) = hit.cwd {
+                    lines.push(Line::from(vec![
+                        Span::styled("Dir: ", Style::default().fg(Color::Yellow)),
+                        Span::raw(super::display_path(cwd)),
+                    ]));
+                }
+
+                if let Some(code) = hit.exit_code {
+                    let (text, color) = if code == 0 {
+                        ("0 ✓".to_string(), Color::Green)
+                    } else {
+                        (format!("{code} ✗"), Color::Red)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled("Exit: ", Style::default().fg(Color::Yellow)),
+                        Span::styled(text, Style::default().fg(color)),
+                    ]));
+                }
+
                 lines.push(Line::raw(""));
                 lines.push(Line::styled(
                     "─".repeat(chunks[1].width as usize - 2),
@@ -331,7 +369,7 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                 }
 
                 lines
-            } else if app.input.trim().is_empty() {
+            } else if !app.has_criteria() {
                 vec![Line::styled(
                     "Type to search...",
                     Style::default().fg(Color::DarkGray),

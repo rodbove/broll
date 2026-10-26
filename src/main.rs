@@ -7,6 +7,7 @@ mod tui;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command, Format};
+use storage::models::SearchFilter;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -21,10 +22,25 @@ fn main() -> Result<()> {
         Command::List { group } => {
             storage::list_sessions(group)?;
         }
-        Command::Search { query, group, terminal, format } => match format {
-            Format::Text => tui::search::run(query, group, terminal)?,
-            Format::Json => storage::search_json(query, group, terminal)?,
-        },
+        Command::Search { query, group, terminal, format, failed, cwd, since } => {
+            let filter = SearchFilter {
+                group,
+                terminal,
+                failed,
+                cwd: cwd.as_deref().map(cli::absolute_dir).transpose()?,
+                since,
+            };
+            match format {
+                Format::Text => tui::search::run(query, filter)?,
+                Format::Json => storage::search_json(query, &filter)?,
+            }
+        }
+        Command::Last { n, session, command } => {
+            storage::print_last(n, session, command)?;
+        }
+        Command::Context { session, last, failed, max_lines, output } => {
+            storage::show_context(session, last, failed, max_lines, output)?;
+        }
 
         Command::Annotate { id, note } => {
             storage::annotate_session(&id, &note)?;

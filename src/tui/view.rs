@@ -191,16 +191,39 @@ fn build_session_lines(
         lines.push(Line::raw(""));
     }
 
+    let mut last_cwd: Option<&str> = None;
     for chunk in chunks {
         let timestamp = chunk.timestamp.format("%H:%M:%S").to_string();
+        let is_input = chunk.kind == ChunkKind::Input;
         let style = match chunk.kind {
             ChunkKind::Input => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
             ChunkKind::Output => Style::default().fg(Color::White),
         };
         let prefix_style = Style::default().fg(Color::DarkGray);
+        let exit_badge = match chunk.exit_code {
+            Some(0) if is_input => Some(Span::styled(" ✓", Style::default().fg(Color::Green))),
+            Some(code) if is_input => {
+                Some(Span::styled(format!(" ✗{code}"), Style::default().fg(Color::Red)))
+            }
+            _ => None,
+        };
+
+        let mut first = true;
+        if is_input
+            && let Some(cwd) = chunk.cwd.as_deref()
+            && last_cwd != Some(cwd)
+        {
+            chunk_line_map.insert(chunk.id, lines.len());
+            first = false;
+            lines.push(Line::styled(
+                format!("── {}", super::display_path(cwd)),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+            ));
+            last_cwd = Some(cwd);
+        }
 
         let clean = strip_ansi_escapes::strip_str(&chunk.content);
-        let mut first = true;
+        let mut badge = exit_badge;
         for line_text in clean.lines() {
             if line_text.trim().is_empty() {
                 continue;
@@ -209,8 +232,11 @@ fn build_session_lines(
                 chunk_line_map.insert(chunk.id, lines.len());
                 first = false;
             }
-            let is_input = chunk.kind == ChunkKind::Input;
-            let mut spans = vec![Span::styled(format!("[{timestamp}] "), prefix_style)];
+            let mut spans = vec![Span::styled(format!("[{timestamp}"), prefix_style)];
+            if let Some(b) = badge.take() {
+                spans.push(b);
+            }
+            spans.push(Span::styled("] ", prefix_style));
             spans.extend(highlight_line(line_text, style, is_input));
             lines.push(Line::from(spans));
         }

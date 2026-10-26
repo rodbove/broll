@@ -1,12 +1,21 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 
-use super::models::{Annotation, Chunk, ChunkKind, SearchHit, Session, SessionExport};
+use super::models::{
+    Annotation, Chunk, ChunkKind, SearchFilter, SearchHit, Session, SessionExport,
+};
 
 /// Current database schema version (PRAGMA user_version). Bump when adding a migration step.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
+
+const FTS_DDL: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    content,
+    content='chunks',
+    content_rowid='id',
+    tokenize='unicode61'
+)";
 
 pub struct Database {
     conn: Connection,
@@ -79,18 +88,8 @@ impl Database {
                 kind TEXT NOT NULL
             );
 
-            CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-                content,
-                content_rowid='id',
-                tokenize='unicode61'
-            );
-
             CREATE INDEX IF NOT EXISTS chunks_session_idx ON chunks(session_id);
             CREATE INDEX IF NOT EXISTS chunks_timestamp_idx ON chunks(timestamp DESC);
-
-            CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-                INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
-            END;
 
             CREATE TABLE IF NOT EXISTS annotations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,10 +105,74 @@ impl Database {
         // v2: per-command metadata captured by the shell hooks.
         self.add_column_if_missing("chunks", "cwd", "TEXT")?;
         self.add_column_if_missing("chunks", "exit_code", "INTEGER")?;
+        let rebuilt_fts = self.migrate_fts()?;
+        self.conn.execute_batch(
+            "
+            CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+                INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE OF content ON chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+                INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+
+            CREATE INDEX IF NOT EXISTS chunks_command_idx ON chunks(session_id, kind, id);
+            ",
+        )?;
 
         // Mark the schema current so future opens skip this work.
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+
+        if rebuilt_fts {
+            self.conn.execute_batch("VACUUM")?;
+        }
         Ok(())
+    }
+
+    fn migrate_fts(&self) -> Result<bool> {
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        match existing {
+            None => {
+                self.conn.execute_batch(FTS_DDL)?;
+                Ok(false)
+            }
+            Some(sql) if sql.contains("content='chunks'") => Ok(false),
+            Some(_) => {
+                self.conn.execute_batch("BEGIN")?;
+                let result = (|| -> Result<()> {
+                    self.conn.execute_batch("DROP TABLE chunks_fts")?;
+                    self.conn.execute_batch(FTS_DDL)?;
+                    self.conn
+                        .execute_batch("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")?;
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => {
+                        self.conn.execute_batch("COMMIT")?;
+                        Ok(true)
+                    }
+                    Err(e) => {
+                        let _ = self.conn.execute_batch("ROLLBACK");
+                        Err(e)
+                    }
+                }
+            }
+        }
     }
 
     /// Add a column to a table if it isn't already present (idempotent ALTER).
@@ -159,10 +222,6 @@ impl Database {
 
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<()> {
-            self.conn.execute(
-                "DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE session_id = ?1)",
-                params![full_id],
-            )?;
             self.conn.execute(
                 "DELETE FROM annotations WHERE session_id = ?1",
                 params![full_id],
@@ -400,12 +459,7 @@ impl Database {
         Ok(commands)
     }
 
-    pub fn search(
-        &self,
-        query: &str,
-        group: Option<&str>,
-        terminal: Option<&str>,
-    ) -> Result<Vec<SearchHit>> {
+    pub fn search(&self, query: &str, filter: &SearchFilter) -> Result<Vec<SearchHit>> {
         let mut hits = Vec::new();
 
         // Add prefix wildcard to each term so "Document" matches "Documents".
@@ -420,33 +474,62 @@ impl Database {
             .collect::<Vec<_>>()
             .join(" ");
 
-        // No usable search terms: return no results rather than erroring.
-        if fts_query.is_empty() {
+        let use_fts = !fts_query.is_empty();
+        if !use_fts && !filter.has_metadata_filters() {
             return Ok(hits);
         }
 
-        let mut where_clauses = vec!["chunks_fts MATCH ?1".to_string()];
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(fts_query)];
-        let mut idx = 2;
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-        if let Some(g) = group {
-            where_clauses.push(format!("s.grp = ?{idx}"));
-            param_values.push(Box::new(g.to_string()));
-            idx += 1;
+        let from = if use_fts {
+            param_values.push(Box::new(fts_query));
+            where_clauses.push("chunks_fts MATCH ?1".to_string());
+            "chunks_fts fts JOIN chunks c ON c.id = fts.rowid"
+        } else {
+            where_clauses.push("c.kind = 'input'".to_string());
+            "chunks c"
+        };
+
+        if let Some(g) = &filter.group {
+            param_values.push(Box::new(g.clone()));
+            where_clauses.push(format!("s.grp = ?{}", param_values.len()));
         }
 
-        if let Some(t) = terminal {
-            where_clauses.push(format!("s.terminal_label = ?{idx}"));
-            param_values.push(Box::new(t.to_string()));
+        if let Some(t) = &filter.terminal {
+            param_values.push(Box::new(t.clone()));
+            where_clauses.push(format!("s.terminal_label = ?{}", param_values.len()));
+        }
+
+        if filter.failed {
+            where_clauses.push("cmd.exit_code IS NOT NULL AND cmd.exit_code <> 0".to_string());
+        }
+
+        if let Some(dir) = filter.cwd.as_deref().map(|d| d.trim_end_matches('/'))
+            && !dir.is_empty()
+        {
+            param_values.push(Box::new(dir.to_string()));
+            let n = param_values.len();
+            where_clauses.push(format!(
+                "(cmd.cwd = ?{n} OR substr(cmd.cwd, 1, length(?{n}) + 1) = ?{n} || '/')"
+            ));
+        }
+
+        if let Some(since) = filter.since {
+            param_values.push(Box::new(since.to_rfc3339()));
+            where_clauses.push(format!("c.timestamp >= ?{}", param_values.len()));
         }
 
         let sql = format!(
             "SELECT c.id, c.session_id, c.timestamp, c.content, c.kind, c.cwd, c.exit_code,
-                    s.id, s.started_at, s.ended_at, s.grp, s.terminal_label, s.tags, s.shell, s.name
-             FROM chunks_fts fts
-             JOIN chunks c ON c.id = fts.rowid
+                    s.id, s.started_at, s.ended_at, s.grp, s.terminal_label, s.tags, s.shell, s.name,
+                    cmd.cwd, cmd.exit_code
+             FROM {from}
              JOIN sessions s ON s.id = c.session_id
+             LEFT JOIN chunks cmd ON cmd.id = (
+                 SELECT MAX(i.id) FROM chunks i
+                 WHERE i.session_id = c.session_id AND i.kind = 'input' AND i.id <= c.id
+             )
              WHERE {}
              ORDER BY c.timestamp DESC
              LIMIT 100",
@@ -477,17 +560,35 @@ impl Database {
                     shell: row.get(13)?,
                     name: row.get(14)?,
                 },
+                row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<i64>>(16)?,
             ))
         })?;
 
         for row in rows {
-            let (chunk_row, session_row) = row?;
+            let (chunk_row, session_row, cwd, exit_code) = row?;
             let chunk = parse_chunk(chunk_row)?;
             let session = parse_session(session_row)?;
-            hits.push(SearchHit { session, chunk });
+            hits.push(SearchHit {
+                session,
+                chunk,
+                cwd,
+                exit_code,
+            });
         }
 
         Ok(hits)
+    }
+
+    pub fn latest_session_id(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     pub fn resolve_session_id(&self, prefix: &str) -> Result<String> {
@@ -781,7 +882,7 @@ mod tests {
         db.insert_chunk(&make_chunk("sess-0001", "goodbye moon", ChunkKind::Output))
             .unwrap();
 
-        let hits = db.search("hello", None, None).unwrap();
+        let hits = db.search("hello", &SearchFilter::default()).unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].chunk.content.contains("hello"));
         assert_eq!(hits[0].session.id, "sess-0001");
@@ -795,7 +896,7 @@ mod tests {
         db.insert_chunk(&make_chunk("sess-0002", "some output", ChunkKind::Output))
             .unwrap();
 
-        let hits = db.search("nonexistent", None, None).unwrap();
+        let hits = db.search("nonexistent", &SearchFilter::default()).unwrap();
         assert!(hits.is_empty());
     }
 
@@ -823,7 +924,7 @@ mod tests {
         db.insert_chunk(&make_chunk("sess-json", "needle here", ChunkKind::Output))
             .unwrap();
 
-        let hits = db.search("needle", None, None).unwrap();
+        let hits = db.search("needle", &SearchFilter::default()).unwrap();
         let json = serde_json::to_string(&hits).unwrap();
         // Lock the JSON shape used by `broll search --format json`.
         assert!(json.contains("\"session\""));
@@ -841,7 +942,7 @@ mod tests {
 
         // Empty, whitespace-only, and quote/star-only queries must not error.
         for q in ["", "   ", "\"", "*", " \" * "] {
-            let hits = db.search(q, None, None).unwrap();
+            let hits = db.search(q, &SearchFilter::default()).unwrap();
             assert!(hits.is_empty(), "query {q:?} should return no hits");
         }
     }
@@ -860,7 +961,11 @@ mod tests {
         db.insert_chunk(&make_chunk("sess-g2", "error found", ChunkKind::Output))
             .unwrap();
 
-        let hits = db.search("error", Some("alpha"), None).unwrap();
+        let filter = SearchFilter {
+            group: Some("alpha".to_string()),
+            ..Default::default()
+        };
+        let hits = db.search("error", &filter).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session.id, "sess-g1");
     }
@@ -1005,5 +1110,199 @@ mod tests {
 
         let commands = db.get_commands("sess-cmd").unwrap();
         assert_eq!(commands, vec!["ls -la", "pwd"]);
+    }
+
+    fn insert_command(
+        db: &Database,
+        session_id: &str,
+        cmd: &str,
+        cwd: &str,
+        exit: Option<i64>,
+        output: &str,
+    ) -> i64 {
+        let mut input = make_chunk(session_id, cmd, ChunkKind::Input);
+        input.cwd = Some(cwd.to_string());
+        let id = db.insert_chunk(&input).unwrap();
+        db.insert_chunk(&make_chunk(session_id, output, ChunkKind::Output))
+            .unwrap();
+        if let Some(code) = exit {
+            db.set_chunk_exit_code(id, code).unwrap();
+        }
+        id
+    }
+
+    #[test]
+    fn search_hit_carries_owning_command_metadata() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-own", None)).unwrap();
+        insert_command(&db, "sess-own", "cargo build", "/proj", Some(101), "boom happened");
+
+        let hits = db.search("boom", &SearchFilter::default()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].chunk.kind, ChunkKind::Output);
+        assert_eq!(hits[0].cwd.as_deref(), Some("/proj"));
+        assert_eq!(hits[0].exit_code, Some(101));
+    }
+
+    #[test]
+    fn search_failed_filter_matches_output_of_failed_commands() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-fail", None)).unwrap();
+        insert_command(&db, "sess-fail", "make ok", "/p", Some(0), "result alpha");
+        insert_command(&db, "sess-fail", "make bad", "/p", Some(2), "result beta");
+        insert_command(&db, "sess-fail", "make running", "/p", None, "result gamma");
+
+        let filter = SearchFilter {
+            failed: true,
+            ..Default::default()
+        };
+        let hits = db.search("result", &filter).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].chunk.content.contains("beta"));
+    }
+
+    #[test]
+    fn search_cwd_filter_matches_directory_and_children_only() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-cwd", None)).unwrap();
+        insert_command(&db, "sess-cwd", "ls", "/home/u/app", Some(0), "hit root");
+        insert_command(&db, "sess-cwd", "ls", "/home/u/app/src", Some(0), "hit child");
+        insert_command(&db, "sess-cwd", "ls", "/home/u/application", Some(0), "hit sibling");
+
+        let filter = SearchFilter {
+            cwd: Some("/home/u/app/".to_string()),
+            ..Default::default()
+        };
+        let mut found: Vec<String> = db
+            .search("hit", &filter)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.chunk.content)
+            .collect();
+        found.sort();
+        assert_eq!(found, vec!["hit child", "hit root"]);
+    }
+
+    #[test]
+    fn search_since_filter_excludes_older_chunks() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-since", None)).unwrap();
+        let mut old = make_chunk("sess-since", "stale entry", ChunkKind::Output);
+        old.timestamp = Utc::now() - chrono::TimeDelta::days(3);
+        db.insert_chunk(&old).unwrap();
+        db.insert_chunk(&make_chunk("sess-since", "fresh entry", ChunkKind::Output))
+            .unwrap();
+
+        let filter = SearchFilter {
+            since: Some(Utc::now() - chrono::TimeDelta::days(1)),
+            ..Default::default()
+        };
+        let hits = db.search("entry", &filter).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].chunk.content, "fresh entry");
+    }
+
+    #[test]
+    fn search_without_query_lists_commands_matching_filters() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-noq", None)).unwrap();
+        insert_command(&db, "sess-noq", "true", "/p", Some(0), "fine");
+        insert_command(&db, "sess-noq", "false", "/p", Some(1), "nope");
+
+        let filter = SearchFilter {
+            failed: true,
+            ..Default::default()
+        };
+        let hits = db.search("", &filter).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].chunk.kind, ChunkKind::Input);
+        assert_eq!(hits[0].chunk.content, "false");
+        assert_eq!(hits[0].exit_code, Some(1));
+    }
+
+    fn fts_integrity_ok(db: &Database) -> bool {
+        db.conn
+            .execute_batch("INSERT INTO chunks_fts(chunks_fts) VALUES ('integrity-check')")
+            .is_ok()
+    }
+
+    #[test]
+    fn delete_keeps_fts_index_consistent() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_session(&make_session("sess-fts1", None)).unwrap();
+        db.create_session(&make_session("sess-fts2", None)).unwrap();
+        db.insert_chunk(&make_chunk("sess-fts1", "shared token", ChunkKind::Output))
+            .unwrap();
+        db.insert_chunk(&make_chunk("sess-fts2", "shared token", ChunkKind::Output))
+            .unwrap();
+
+        db.delete_session("sess-fts1").unwrap();
+
+        let hits = db.search("shared", &SearchFilter::default()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session.id, "sess-fts2");
+        assert!(fts_integrity_ok(&db));
+    }
+
+    #[test]
+    fn migrates_legacy_fts_table_to_external_content() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, grp TEXT,
+                terminal_label TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]',
+                shell TEXT NOT NULL, name TEXT
+            );
+            CREATE TABLE chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                timestamp TEXT NOT NULL, content TEXT NOT NULL, kind TEXT NOT NULL,
+                cwd TEXT, exit_code INTEGER
+            );
+            CREATE VIRTUAL TABLE chunks_fts USING fts5(
+                content, content_rowid='id', tokenize='unicode61'
+            );
+            CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
+                INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+            INSERT INTO sessions (id, started_at, terminal_label, shell)
+                VALUES ('legacy-1', '2026-01-01T00:00:00+00:00', 't', '/bin/zsh');
+            INSERT INTO chunks (session_id, timestamp, content, kind)
+                VALUES ('legacy-1', '2026-01-01T00:00:01+00:00', 'legacy needle', 'output');
+            PRAGMA user_version = 2;
+            ",
+        )
+        .unwrap();
+        let db = Database { conn };
+        db.migrate().unwrap();
+
+        let sql: String = db
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("content='chunks'"));
+
+        let hits = db.search("needle", &SearchFilter::default()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session.id, "legacy-1");
+        assert!(fts_integrity_ok(&db));
+    }
+
+    #[test]
+    fn latest_session_id_picks_most_recent() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.latest_session_id().unwrap().is_none());
+
+        let mut older = make_session("sess-old", None);
+        older.started_at = Utc::now() - chrono::TimeDelta::hours(1);
+        db.create_session(&older).unwrap();
+        db.create_session(&make_session("sess-new", None)).unwrap();
+
+        assert_eq!(db.latest_session_id().unwrap().as_deref(), Some("sess-new"));
     }
 }

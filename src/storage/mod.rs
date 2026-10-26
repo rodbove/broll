@@ -1,10 +1,13 @@
 pub mod db;
+pub mod history;
 pub mod models;
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 pub use db::Database;
+use history::CommandRecord;
+use models::SearchFilter;
 
 /// List recorded sessions, optionally filtered by group.
 pub fn list_sessions(group: Option<String>) -> Result<()> {
@@ -50,14 +53,13 @@ pub fn list_sessions(group: Option<String>) -> Result<()> {
 }
 
 /// Run a search headlessly and print the results as JSON to stdout.
-pub fn search_json(
-    query: Option<String>,
-    group: Option<String>,
-    terminal: Option<String>,
-) -> Result<()> {
-    let query = query.context("a search query is required with --format json")?;
+pub fn search_json(query: Option<String>, filter: &SearchFilter) -> Result<()> {
+    let query = query.unwrap_or_default();
+    if query.trim().is_empty() && !filter.has_metadata_filters() {
+        anyhow::bail!("a search query or a --failed/--cwd/--since filter is required with --format json");
+    }
     let db = Database::open()?;
-    let hits = db.search(&query, group.as_deref(), terminal.as_deref())?;
+    let hits = db.search(&query, filter)?;
     println!("{}", serde_json::to_string_pretty(&hits)?);
     Ok(())
 }
@@ -226,5 +228,76 @@ pub fn extract_commands(id: &str, output: Option<PathBuf>) -> Result<()> {
         None => print!("{script}"),
     }
 
+    Ok(())
+}
+
+fn resolve_target_session(db: &Database, id: Option<&str>) -> Result<(String, bool)> {
+    let current = std::env::var(crate::recorder::SESSION_ENV_VAR).ok();
+    let full_id = match (id, &current) {
+        (Some(id), _) => db.resolve_session_id(id)?,
+        (None, Some(current)) => current.clone(),
+        (None, None) => db
+            .latest_session_id()?
+            .context("No sessions recorded yet.")?,
+    };
+    let in_session = current.as_deref() == Some(full_id.as_str());
+    Ok((full_id, in_session))
+}
+
+fn load_commands(db: &Database, id: Option<&str>) -> Result<(String, Vec<CommandRecord>)> {
+    let (full_id, in_session) = resolve_target_session(db, id)?;
+    let chunks = db.get_session_chunks(&full_id)?;
+    Ok((full_id, history::group_commands(chunks, in_session)))
+}
+
+pub fn print_last(n: usize, session: Option<String>, with_command: bool) -> Result<()> {
+    anyhow::ensure!(n >= 1, "N must be 1 or greater");
+    let db = Database::open()?;
+    let (_, records) = load_commands(&db, session.as_deref())?;
+    let record = records
+        .len()
+        .checked_sub(n)
+        .and_then(|i| records.get(i))
+        .with_context(|| format!("Only {} finished command(s) in this session", records.len()))?;
+
+    if with_command {
+        println!("$ {}", record.command.content);
+    }
+    let output = record.output_text();
+    if !output.is_empty() {
+        println!("{output}");
+    }
+    Ok(())
+}
+
+pub fn show_context(
+    session: Option<String>,
+    last: usize,
+    failed: bool,
+    max_lines: usize,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    let db = Database::open()?;
+    let (full_id, records) = load_commands(&db, session.as_deref())?;
+    let selected: Vec<&CommandRecord> = records.iter().filter(|r| !failed || r.failed()).collect();
+    if selected.is_empty() {
+        eprintln!("No matching commands found.");
+        return Ok(());
+    }
+    let start = selected.len().saturating_sub(last.max(1));
+    let session = db.get_session_by_id(&full_id)?;
+    let markdown = history::render_context(&session, &selected[start..], max_lines);
+
+    match output {
+        Some(path) => {
+            std::fs::write(&path, &markdown)?;
+            println!(
+                "Wrote {} command(s) to {}",
+                selected.len() - start,
+                path.display()
+            );
+        }
+        None => print!("{markdown}"),
+    }
     Ok(())
 }
