@@ -10,6 +10,8 @@ Unlike `asciinema` (video-like playback) or shell history (commands only), broll
 - **Name** sessions for easy identification and lookup later
 - **Search** across all recorded sessions with prefix-matching full-text search (SQLite FTS5) — live search updates results as you type, or `--format json` for scripting
 - **Capture** each command's working directory and exit code alongside its output
+- **Filter search** by failed commands (`--failed`), directory (`--cwd`), and time (`--since`)
+- **Recall** the last command's output with `broll last`, or dump recent commands as markdown with `broll context`
 - **View** sessions in a scrollable TUI with timestamped, color-coded output, syntax highlighting, and in-session search (`/`)
 - **Mouse support** in both TUIs — scroll wheel navigation and click to select/position cursor
 - **Statistics** — `broll stats` shows session counts, storage size, and date range
@@ -91,10 +93,39 @@ broll search "panic" --terminal term-a3f2
 
 # Print machine-readable JSON instead of the TUI (for scripting/piping)
 broll search "error" --format json | jq '.[].chunk.content'
+
+# Filter by command metadata (works with or without a query)
+broll search "timeout" --failed          # only output of commands that exited non-zero
+broll search --failed --since 2h         # list every failed command from the last 2 hours
+broll search "panic" --cwd ~/code/api    # only commands run in this directory or below
+broll search "deploy" --since 2026-10-01 # since a calendar date (local midnight)
 ```
 
-Each recorded command also captures its **working directory** and **exit code**,
-which appear in the `--format json` output (and in the stored session data).
+Each recorded command also captures its **working directory** and **exit code**.
+Both appear in the search preview, the view TUI (a `── dir` header when the directory
+changes, and a green `✓` or red `✗<code>` next to each command), and in the
+`--format json` output (`cwd` and `exit_code` of the command that produced each hit).
+
+### Recall recent output
+
+```bash
+# Print the output of the last command again, without re-running it
+broll last | grep -i error
+
+# Second-to-last command, with the command line on top
+broll last 2 --command
+
+# From a specific session (defaults to the current session, or the latest one)
+broll last --session fix-auth
+
+# Recent commands + output as markdown, ready for a bug report or AI assistant
+broll context                     # last 10 commands
+broll context -n 3 --failed       # last 3 failed commands
+broll context --max-lines 20 -o context.md
+```
+
+`broll context` keeps the head and tail of long outputs, and runs redaction again
+before printing, so it is safe to paste.
 
 The search TUI has two panels — results list on the left, preview on the right. Run `broll search` without arguments to enter live search mode where results update as you type with debounced input. Press `Tab` to switch focus between panels, `j/k` or arrows to navigate. Press `Enter` on any result to open the full session in view mode, scrolled to the matching output with it highlighted. Press `/` or `i` to edit the search query. Press `Esc` to return to search results.
 
