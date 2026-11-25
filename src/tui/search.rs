@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use super::clipboard;
 use crate::storage::models::{SearchFilter, SearchHit};
 use crate::storage::Database;
+use crate::storage::models::short_id;
 
 #[derive(PartialEq)]
 enum Focus {
@@ -252,7 +253,7 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
                 .map(|hit| {
                     let session_label = match &hit.session.name {
                         Some(name) => name.clone(),
-                        None => hit.session.id[..8].to_string(),
+                        None => short_id(&hit.session.id).to_string(),
                     };
                     let time = hit.chunk.timestamp.format("%Y-%m-%d %H:%M:%S");
                     let clean = strip_ansi_escapes::strip_str(&hit.chunk.content);
@@ -312,7 +313,7 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut SearchApp) -> Result<Actio
             // Right: preview of selected hit
             let preview_content = if let Some(hit) = app.selected_hit() {
                 let mut lines = Vec::new();
-                let session_short = &hit.session.id[..8];
+                let session_short = short_id(&hit.session.id);
                 let time = hit.chunk.timestamp.format("%Y-%m-%d %H:%M:%S");
 
                 lines.push(Line::from(vec![

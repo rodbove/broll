@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 pub use db::Database;
 use history::CommandRecord;
-use models::SearchFilter;
+use models::{short_id, SearchFilter};
 
 /// List recorded sessions, optionally filtered by group.
 pub fn list_sessions(group: Option<String>) -> Result<()> {
@@ -26,7 +26,7 @@ pub fn list_sessions(group: Option<String>) -> Result<()> {
     println!("{}", "-".repeat(86));
 
     for session in sessions {
-        let short_id = &session.id[..8];
+        let short_id = short_id(&session.id);
         let name = session.name.as_deref().unwrap_or("-");
         let duration = session
             .ended_at
@@ -68,7 +68,7 @@ pub fn search_json(query: Option<String>, filter: &SearchFilter) -> Result<()> {
 pub fn annotate_session(id: &str, note: &str) -> Result<()> {
     let db = Database::open()?;
     let full_id = db.add_annotation(id, note)?;
-    println!("Added note to session {}", &full_id[..8]);
+    println!("Added note to session {}", short_id(&full_id));
     Ok(())
 }
 
@@ -76,7 +76,7 @@ pub fn annotate_session(id: &str, note: &str) -> Result<()> {
 pub fn rename_session(id: &str, new_name: &str) -> Result<()> {
     let db = Database::open()?;
     let full_id = db.rename_session(id, new_name)?;
-    println!("Renamed session {} to \"{}\"", &full_id[..8], new_name);
+    println!("Renamed session {} to \"{}\"", short_id(&full_id), new_name);
     Ok(())
 }
 
@@ -92,7 +92,7 @@ pub fn delete_sessions(ids: &[String], force: bool) -> Result<()> {
             let session = db.get_session_by_id(&full_id)?;
             let label = session
                 .name
-                .unwrap_or_else(|| full_id[..8].to_string());
+                .unwrap_or_else(|| short_id(&full_id).to_string());
             resolved.push((full_id, label));
         }
         let labels: Vec<&str> = resolved.iter().map(|(_, l)| l.as_str()).collect();
@@ -112,7 +112,7 @@ pub fn delete_sessions(ids: &[String], force: bool) -> Result<()> {
         let (full_id, name) = db.delete_session(id)?;
         let label = name
             .as_deref()
-            .unwrap_or(&full_id[..8]);
+            .unwrap_or(short_id(&full_id));
         println!("Deleted session {}", label);
     }
     Ok(())
@@ -128,7 +128,7 @@ pub fn export_session(id: &str, output: Option<PathBuf>) -> Result<()> {
         .session
         .name
         .as_deref()
-        .unwrap_or(&export.session.id[..8]);
+        .unwrap_or(short_id(&export.session.id));
 
     match output {
         Some(path) => {
@@ -158,7 +158,7 @@ pub fn import_session(file: &std::path::Path) -> Result<()> {
         .session
         .name
         .clone()
-        .unwrap_or_else(|| export.session.id[..8].to_string());
+        .unwrap_or_else(|| short_id(&export.session.id).to_string());
 
     let db = Database::open()?;
     db.import_session(&export)?;

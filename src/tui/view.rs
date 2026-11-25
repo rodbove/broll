@@ -14,6 +14,7 @@ use super::clipboard;
 use super::highlight::highlight_line;
 use crate::storage::models::{Annotation, Chunk, ChunkKind};
 use crate::storage::Database;
+use crate::storage::models::short_id;
 
 #[derive(PartialEq)]
 enum Mode {
@@ -257,8 +258,8 @@ pub fn run(session_id: &str) -> Result<()> {
 
     let session = db.get_session_by_id(&full_id)?;
     let title = match session.name {
-        Some(name) => format!(" broll view — {} ({}) ", name, &full_id[..8]),
-        None => format!(" broll view — session {} ", &full_id[..8]),
+        Some(name) => format!(" broll view — {} ({}) ", name, short_id(&full_id)),
+        None => format!(" broll view — session {} ", short_id(&full_id)),
     };
 
     let annotations = db.get_annotations(&full_id)?;
@@ -305,8 +306,8 @@ pub fn run_in_terminal(
 
     let session = db.get_session_by_id(&full_id)?;
     let title = match session.name {
-        Some(name) => format!(" broll view — {} ({}) ", name, &full_id[..8]),
-        None => format!(" broll view — session {} ", &full_id[..8]),
+        Some(name) => format!(" broll view — {} ({}) ", name, short_id(&full_id)),
+        None => format!(" broll view — session {} ", short_id(&full_id)),
     };
 
     let annotations = db.get_annotations(&full_id)?;

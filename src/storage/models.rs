@@ -1,6 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -90,5 +94,19 @@ pub struct SearchFilter {
 impl SearchFilter {
     pub fn has_metadata_filters(&self) -> bool {
         self.failed || self.cwd.is_some() || self.since.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_id;
+
+    #[test]
+    fn short_id_handles_short_and_non_ascii_ids() {
+        assert_eq!(short_id("0123456789abcdef"), "01234567");
+        assert_eq!(short_id("abc"), "abc");
+        assert_eq!(short_id("ééééé"), "éééé");
+        assert_eq!(short_id("abcdefgé"), "abcdefgé");
+        assert_eq!(short_id("abcdefgéh"), "abcdefgéh");
     }
 }
