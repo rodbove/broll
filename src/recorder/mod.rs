@@ -139,6 +139,43 @@ fn decode_with_carry(carry: &mut Vec<u8>, data: &[u8]) -> String {
     }
 }
 
+fn marker_safe_flush_len(buf: &str) -> usize {
+    let mut at = buf.len().saturating_sub(MARKER_COMMON.len());
+    while !buf.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// Render raw terminal bytes through a virtual terminal and return plain text lines.
+fn render_vt(raw: &[u8], term_cols: u16) -> String {
+    let newline_count = raw.iter().filter(|&&b| b == b'\n').count();
+    let estimated_rows = (newline_count + 1).max(500) as u16;
+    // vt100 panics on a zero-width screen; a terminal that reports no size
+    // (or a PTY with no winsize) must not take the capture thread down.
+    let cols = term_cols.max(1);
+    let mut parser = vt100::Parser::new(estimated_rows, cols, 0);
+    parser.process(raw);
+    let screen = parser.screen();
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for (row, text) in screen.rows(0, cols).enumerate() {
+        current.push_str(&text);
+        if !screen.row_wrapped(row as u16) {
+            lines.push(current.trim_end().to_string());
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current.trim_end().to_string());
+    }
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
 /// RAII guard that restores terminal from raw mode on drop.
 struct RawModeGuard;
 
@@ -157,6 +194,41 @@ impl Drop for RawModeGuard {
 
 /// How long to wait for more data before flushing an incomplete line to DB.
 const INCOMPLETE_LINE_TIMEOUT: Duration = Duration::from_secs(2);
+
+const BASH_HOOKS: &str = r##"_broll_armed=
+_broll_ec=0
+_broll_preexec() {
+  [[ -n "$_broll_armed" ]] || return 0
+  [[ -n "${COMP_LINE-}" ]] && return 0
+  _broll_armed=
+  [[ "$BASH_COMMAND" == _broll_ec=* ]] && return 0
+  local cmd
+  cmd=$(HISTTIMEFORMAT= builtin history 1 | sed '1s/^ *[0-9][0-9]*[* ] *//')
+  [[ -n "$cmd" ]] || cmd=$BASH_COMMAND
+  printf '\e]777;broll-cwd;%s\a' "${PWD//$'\a'/}"
+  printf '\e]777;broll-exec;%s\a' "${cmd//$'\a'/}"
+}
+_broll_precmd() {
+  printf '\e]777;broll-exit;%d\a' "$_broll_ec"
+  printf '\e]777;broll-cmd\a'
+  _broll_armed=1
+}
+_broll_set_prev_trap() { _broll_prev_trap=$2; }
+_broll_prev_trap=
+_broll_trap=$(trap -p DEBUG)
+[[ -n "$_broll_trap" ]] && eval "_broll_set_prev_trap ${_broll_trap#trap }"
+if [[ -n "$_broll_prev_trap" ]]; then
+  trap "$_broll_prev_trap"$'\n''_broll_preexec' DEBUG
+else
+  trap '_broll_preexec' DEBUG
+fi
+if (( ${#PROMPT_COMMAND[@]} > 1 )); then
+  PROMPT_COMMAND[0]=$'_broll_ec=$?\n'"${PROMPT_COMMAND[0]}"
+  PROMPT_COMMAND+=(_broll_precmd)
+else
+  PROMPT_COMMAND=$'_broll_ec=$?\n'"${PROMPT_COMMAND}"$'\n_broll_precmd'
+fi
+"##;
 
 /// Create a temporary rc file that sources the user's config then installs hooks.
 /// The preexec hook emits the command text directly inside the OSC marker.
@@ -214,30 +286,7 @@ fn create_hook_rc(shell_name: &str) -> Option<tempfile::TempDir> {
                 .unwrap_or_default();
 
             let rc_path = tmp_dir.path().join(".bashrc");
-            // bash: emit the last command in precmd (before the precmd marker)
-            // using fc -ln -1 to get the full command line
-            let content = format!(
-                concat!(
-                    "{}", // source user's bashrc
-                    "_broll_last_hist=\"\"\n",
-                    "_broll_precmd() {{\n",
-                    // Capture $? first; any other command below would clobber it.
-                    "  local ec=$?\n",
-                    "  local cmd\n",
-                    "  cmd=$(fc -ln -1 2>/dev/null | sed 's/^[[:space:]]*//')\n",
-                    "  cmd=\"${{cmd//$'\\a'/}}\"\n",
-                    "  if [[ -n \"$cmd\" && \"$cmd\" != \"$_broll_last_hist\" ]]; then\n",
-                    "    _broll_last_hist=\"$cmd\"\n",
-                    "    printf '\\e]777;broll-cwd;%s\\a' \"${{PWD//$'\\a'/}}\"\n",
-                    "    printf '\\e]777;broll-exec;%s\\a' \"$cmd\"\n",
-                    "    printf '\\e]777;broll-exit;%d\\a' \"$ec\"\n",
-                    "  fi\n",
-                    "  printf '\\e]777;broll-cmd\\a'\n",
-                    "}}\n",
-                    "PROMPT_COMMAND=\"_broll_precmd;${{PROMPT_COMMAND}}\"\n",
-                ),
-                source_line,
-            );
+            let content = format!("{source_line}{BASH_HOOKS}");
             std::fs::write(&rc_path, content).ok()?;
             Some(())
         }
@@ -393,33 +442,6 @@ pub fn start_session(
         // Row id of the command (input) chunk currently running, for exit-code update.
         let mut current_command_id: Option<i64> = None;
 
-        /// Render raw terminal bytes through a virtual terminal and return plain text lines.
-        fn render_vt(raw: &[u8], term_cols: u16) -> String {
-            // Estimate rows needed: at least one row per newline, with a reasonable minimum.
-            // This avoids the previous hardcoded 500-row limit that silently lost output.
-            let newline_count = raw.iter().filter(|&&b| b == b'\n').count();
-            let estimated_rows = (newline_count + 1).max(500) as u16;
-            // vt100 panics on a zero-width screen; a terminal that reports no size
-            // (or a PTY with no winsize) must not take the capture thread down.
-            let cols = term_cols.max(1);
-            let mut parser = vt100::Parser::new(estimated_rows, cols, 0);
-            parser.process(raw);
-            let screen = parser.screen();
-            let mut lines: Vec<String> = Vec::new();
-            for row in 0..screen.size().0 {
-                let line = screen.contents_between(
-                    row, 0,
-                    row, screen.size().1 - 1,
-                );
-                lines.push(line.trim_end().to_string());
-            }
-            // Trim trailing empty lines
-            while lines.last().is_some_and(|l: &String| l.is_empty()) {
-                lines.pop();
-            }
-            lines.join("\n")
-        }
-
         /// Lines emitted by macOS zsh session save/restore — not real command output.
         fn is_shell_noise(line: &str) -> bool {
             let trimmed = line.trim();
@@ -487,8 +509,7 @@ pub fn start_session(
                                 let Some(start) = raw_buf.find(MARKER_COMMON) else {
                                     // No marker present: flush all but a small tail that
                                     // could be the start of a marker split across reads.
-                                    let keep = MARKER_COMMON.len();
-                                    let flush_to = raw_buf.len().saturating_sub(keep);
+                                    let flush_to = marker_safe_flush_len(&raw_buf);
                                     if flush_to > 0 {
                                         if state == CaptureState::Capturing {
                                             cmd_output_bytes
@@ -789,6 +810,38 @@ mod tests {
         out.push_str(&decode_with_carry(&mut carry, b));
         assert_eq!(out, "héllo");
         assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn flush_len_lands_on_char_boundary() {
+        for buf in ["✓✓✓✓✓\r\n", "✓✓✓✓✓✓\r\n", "aé✓✓✓✓✓\r\n", "ab✓✓✓✓✓\r\n"] {
+            let at = marker_safe_flush_len(buf);
+            assert!(buf.is_char_boundary(at), "{buf:?}");
+            assert!(buf.len() - at >= MARKER_COMMON.len(), "{buf:?}");
+        }
+    }
+
+    #[test]
+    fn flush_len_is_zero_for_short_buffers() {
+        assert_eq!(marker_safe_flush_len(""), 0);
+        assert_eq!(marker_safe_flush_len("é"), 0);
+    }
+
+    #[test]
+    fn render_vt_keeps_last_column() {
+        assert_eq!(render_vt(b"0123456789\r\n", 10), "0123456789");
+    }
+
+    #[test]
+    fn render_vt_joins_soft_wrapped_rows() {
+        let line = "abcdefghijklmnopqrstuvwxy";
+        let raw = format!("{line}\r\nnext\r\n");
+        assert_eq!(render_vt(raw.as_bytes(), 10), format!("{line}\nnext"));
+    }
+
+    #[test]
+    fn render_vt_keeps_hard_line_breaks() {
+        assert_eq!(render_vt(b"a\r\n\r\nb\r\n", 80), "a\n\nb");
     }
 
     #[test]
