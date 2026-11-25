@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::filter;
-use crate::storage::models::{Chunk, ChunkKind, Session};
+use crate::storage::models::{short_id, Chunk, ChunkKind, Session};
 use crate::storage::Database;
 
 /// Marker env var so we can detect nested sessions and stop gracefully.
 pub const SESSION_ENV_VAR: &str = "BROLL_SESSION_ID";
+const PID_ENV_VAR: &str = "BROLL_PID";
 
 /// Unique markers emitted by shell hooks to delimit command output.
 /// Uses OSC sequences that terminals silently ignore.
@@ -149,11 +150,18 @@ fn marker_safe_flush_len(buf: &str) -> usize {
 
 /// Render raw terminal bytes through a virtual terminal and return plain text lines.
 fn render_vt(raw: &[u8], term_cols: u16) -> String {
-    let newline_count = raw.iter().filter(|&&b| b == b'\n').count();
-    let estimated_rows = (newline_count + 1).max(500) as u16;
     // vt100 panics on a zero-width screen; a terminal that reports no size
     // (or a PTY with no winsize) must not take the capture thread down.
     let cols = term_cols.max(1);
+    let plain = strip_ansi_escapes::strip_str(String::from_utf8_lossy(raw));
+    let needed_rows: usize = plain
+        .split('\n')
+        .map(|line| line.chars().count().div_ceil(cols as usize).max(1))
+        .sum();
+    if needed_rows > MAX_VT_ROWS {
+        return render_plain(&plain);
+    }
+    let estimated_rows = (needed_rows + 1).max(500) as u16;
     let mut parser = vt100::Parser::new(estimated_rows, cols, 0);
     parser.process(raw);
     let screen = parser.screen();
@@ -176,6 +184,29 @@ fn render_vt(raw: &[u8], term_cols: u16) -> String {
     lines.join("\n")
 }
 
+const MAX_VT_ROWS: usize = 10_000;
+
+fn render_plain(plain: &str) -> String {
+    let mut lines: Vec<&str> = plain
+        .split('\n')
+        .map(|line| {
+            let line = line.trim_end_matches('\r');
+            line.rsplit('\r').next().unwrap_or(line).trim_end()
+        })
+        .collect();
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+fn usable_size(size: std::io::Result<(u16, u16)>) -> (u16, u16) {
+    match size {
+        Ok((cols, rows)) if cols > 0 && rows > 0 => (cols, rows),
+        _ => (80, 24),
+    }
+}
+
 /// RAII guard that restores terminal from raw mode on drop.
 struct RawModeGuard;
 
@@ -194,6 +225,31 @@ impl Drop for RawModeGuard {
 
 /// How long to wait for more data before flushing an incomplete line to DB.
 const INCOMPLETE_LINE_TIMEOUT: Duration = Duration::from_secs(2);
+
+const ZSH_ENV: &str = r##"_broll_tmp_zdotdir=$ZDOTDIR
+if [[ -n "${_BROLL_ZDOTDIR-}" ]]; then ZDOTDIR=$_BROLL_ZDOTDIR; else unset ZDOTDIR; fi
+unset _BROLL_ZDOTDIR
+[[ -f "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
+_broll_user_zdotdir=${ZDOTDIR-}
+ZDOTDIR=$_broll_tmp_zdotdir
+"##;
+
+const ZSH_RC: &str = r##"if [[ -n "$_broll_user_zdotdir" ]]; then ZDOTDIR=$_broll_user_zdotdir; else unset ZDOTDIR; fi
+unset _broll_tmp_zdotdir _broll_user_zdotdir
+[[ -f "${ZDOTDIR:-$HOME}/.zshrc" ]] && source "${ZDOTDIR:-$HOME}/.zshrc"
+_broll_preexec() {
+  printf '\e]777;broll-cwd;%s\a' "${PWD//$'\a'/}"
+  printf '\e]777;broll-exec;%s\a' "${1//$'\a'/}"
+}
+_broll_precmd() {
+  local ec=$?
+  printf '\e]777;broll-exit;%d\a' "$ec"
+  printf '\e]777;broll-cmd\a'
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook preexec _broll_preexec
+add-zsh-hook precmd _broll_precmd
+"##;
 
 const BASH_HOOKS: &str = r##"_broll_armed=
 _broll_ec=0
@@ -244,37 +300,8 @@ fn create_hook_rc(shell_name: &str) -> Option<tempfile::TempDir> {
 
     let hook_code = match shell_name {
         "zsh" => {
-            let user_zshrc = dirs::home_dir()
-                .map(|h| h.join(".zshrc"))
-                .filter(|p| p.exists());
-            let source_line = user_zshrc
-                .map(|p| format!("[[ -f \"{}\" ]] && source \"{0}\"\n", p.display()))
-                .unwrap_or_default();
-
-            let rc_path = tmp_dir.path().join(".zshrc");
-            // zsh preexec receives the command line as $1
-            // Strip BEL chars to avoid breaking the OSC sequence
-            let content = format!(
-                concat!(
-                    "{}", // source user's zshrc
-                    "_broll_preexec() {{\n",
-                    "  local cmd=\"${{1//$'\\a'/}}\"\n",
-                    "  printf '\\e]777;broll-cwd;%s\\a' \"${{PWD//$'\\a'/}}\"\n",
-                    "  printf '\\e]777;broll-exec;%s\\a' \"$cmd\"\n",
-                    "}}\n",
-                    // Capture $? first; it is the exit code of the command that just ran.
-                    "_broll_precmd() {{\n",
-                    "  local ec=$?\n",
-                    "  printf '\\e]777;broll-exit;%d\\a' \"$ec\"\n",
-                    "  printf '\\e]777;broll-cmd\\a'\n",
-                    "}}\n",
-                    "autoload -Uz add-zsh-hook\n",
-                    "add-zsh-hook preexec _broll_preexec\n",
-                    "add-zsh-hook precmd _broll_precmd\n",
-                ),
-                source_line,
-            );
-            std::fs::write(&rc_path, content).ok()?;
+            std::fs::write(tmp_dir.path().join(".zshenv"), ZSH_ENV).ok()?;
+            std::fs::write(tmp_dir.path().join(".zshrc"), ZSH_RC).ok()?;
             Some(())
         }
         "bash" => {
@@ -351,7 +378,7 @@ pub fn start_session(
     );
     eprintln!("\x1b[2m  exit the shell or run `broll stop` to end recording\x1b[0m");
 
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (cols, rows) = usable_size(crossterm::terminal::size());
 
     let pty_system = NativePtySystem::default();
     let pair = pty_system
@@ -372,6 +399,7 @@ pub fn start_session(
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env(SESSION_ENV_VAR, &session_id);
     cmd.env("BROLL_SESSION", session_label);
+    cmd.env(PID_ENV_VAR, std::process::id().to_string());
 
     // Set working directory (defaults to current directory)
     let work_dir = dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
@@ -383,6 +411,9 @@ pub fn start_session(
     if let Some(ref tmp) = _tmp_dir {
         match shell_name.as_str() {
             "zsh" => {
+                if let Some(orig) = std::env::var_os("ZDOTDIR") {
+                    cmd.env("_BROLL_ZDOTDIR", orig);
+                }
                 cmd.env("ZDOTDIR", tmp.path().to_str().unwrap_or("/tmp"));
             }
             "bash" => {
@@ -403,6 +434,16 @@ pub fn start_session(
 
     let resize_flag = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resize_flag))?;
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGUSR1, Arc::clone(&stop_flag))?;
+    let mut killer = child.clone_killer();
+    std::thread::spawn(move || {
+        while !stop_flag.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = killer.kill();
+    });
 
     let term_cols = Arc::new(AtomicU16::new(cols));
     let term_cols_storage = Arc::clone(&term_cols);
@@ -647,6 +688,8 @@ pub fn start_session(
     loop {
         if resize_flag.swap(false, Ordering::Relaxed)
             && let Ok((cols, rows)) = crossterm::terminal::size()
+            && cols > 0
+            && rows > 0
         {
             term_cols.store(cols, Ordering::Relaxed);
             let _ = pair.master.resize(PtySize {
@@ -700,15 +743,22 @@ pub fn start_session(
 
 /// Stop the current recording session (called from within a sub-shell).
 pub fn stop_session() -> Result<()> {
-    match std::env::var(SESSION_ENV_VAR) {
-        Ok(_id) => {
-            println!("broll: stopping session, exit the shell to finalize.");
-            std::process::exit(0);
-        }
-        Err(_) => {
-            anyhow::bail!("Not inside a broll recording session.");
-        }
-    }
+    let id = std::env::var(SESSION_ENV_VAR)
+        .map_err(|_| anyhow::anyhow!("Not inside a broll recording session."))?;
+    let pid: u32 = std::env::var(PID_ENV_VAR)
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .filter(|p| *p > 1)
+        .context("This session was started by an older broll. Exit the shell to stop it.")?;
+    let session = Database::open()?.get_session_by_id(&id)?;
+    anyhow::ensure!(session.ended_at.is_none(), "Session {} already ended.", short_id(&id));
+    let status = std::process::Command::new("kill")
+        .args(["-USR1", &pid.to_string()])
+        .status()
+        .context("Failed to run kill")?;
+    anyhow::ensure!(status.success(), "Could not signal the broll recorder (pid {pid}).");
+    eprintln!("broll: stopping session {}", short_id(&id));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -837,6 +887,37 @@ mod tests {
         let line = "abcdefghijklmnopqrstuvwxy";
         let raw = format!("{line}\r\nnext\r\n");
         assert_eq!(render_vt(raw.as_bytes(), 10), format!("{line}\nnext"));
+    }
+
+    #[test]
+    fn render_vt_keeps_every_line_of_huge_output() {
+        let raw: String = (0..70_000).map(|n| format!("\x1b[32mline {n}\x1b[0m\r\n")).collect();
+        let out = render_vt(raw.as_bytes(), 80);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 70_000);
+        assert_eq!(lines[0], "line 0");
+        assert_eq!(lines[69_999], "line 69999");
+    }
+
+    #[test]
+    fn render_vt_keeps_top_of_wrapped_output() {
+        let raw = format!("first\r\n{}\r\nlast\r\n", "x".repeat(80 * 600));
+        let out = render_vt(raw.as_bytes(), 80);
+        assert!(out.starts_with("first\n"));
+        assert!(out.ends_with("\nlast"));
+    }
+
+    #[test]
+    fn render_plain_keeps_last_carriage_return_segment() {
+        assert_eq!(render_plain("10%\r50%\r100%\r\ndone\r\n\r\n"), "100%\ndone");
+    }
+
+    #[test]
+    fn usable_size_falls_back_on_zero_or_error() {
+        assert_eq!(usable_size(Ok((120, 40))), (120, 40));
+        assert_eq!(usable_size(Ok((0, 0))), (80, 24));
+        assert_eq!(usable_size(Ok((100, 0))), (80, 24));
+        assert_eq!(usable_size(Err(std::io::Error::other("no tty"))), (80, 24));
     }
 
     #[test]
