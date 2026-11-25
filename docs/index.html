@@ -678,10 +678,14 @@
         </thead>
         <tbody>
           <tr><td>Secret env vars</td><td>export API_KEY=sk-abc123</td></tr>
-          <tr><td>Bearer tokens</td><td>Authorization: Bearer eyJ...</td></tr>
+          <tr><td>Secret flags</td><td>--password hunter2</td></tr>
+          <tr><td>Secret keys in JSON/YAML</td><td>"password": "abc"</td></tr>
+          <tr><td>Bearer and Basic auth</td><td>Authorization: Bearer eyJ...</td></tr>
+          <tr><td>curl credentials</td><td>curl -u user:pass</td></tr>
+          <tr><td>Provider tokens</td><td>ghp_..., glpat-..., sk-..., xoxb-...</td></tr>
           <tr><td>AWS access keys</td><td>AKIAIOSFODNN7EXAMPLE</td></tr>
           <tr><td>Long secret values</td><td>token: aGVsbG8gd29ybGQ...</td></tr>
-          <tr><td>Database URLs</td><td>postgres://user:pass@host/db</td></tr>
+          <tr><td>URL credentials</td><td>https://user:token@host</td></tr>
           <tr><td>JWTs</td><td>eyJhbG...eyJzdW...signature</td></tr>
           <tr><td>Private key blocks</td><td>-----BEGIN PRIVATE KEY-----</td></tr>
         </tbody>

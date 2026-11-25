@@ -219,10 +219,14 @@ Filtering is **on by default**. The following patterns are redacted:
 | Pattern | Example |
 |---------|---------|
 | Secret env vars | `export API_KEY=sk-abc123` |
-| Bearer tokens | `Authorization: Bearer eyJ...` |
+| Secret flags | `--password hunter2`, `--client-secret=abc` |
+| Secret keys in JSON/YAML | `"password": "abc"`, `api_token: abc` |
+| Bearer and Basic auth | `Authorization: Bearer eyJ...`, `Authorization: Basic dXNl...` |
+| curl credentials | `curl -u user:pass` |
+| Provider tokens | `ghp_...`, `glpat-...`, `sk-...`, `xoxb-...`, `sk_live_...`, `AIza...`, `npm_...` |
 | AWS access keys | `AKIAIOSFODNN7EXAMPLE` |
 | Long secret values | `token: aGVsbG8gd29ybGQgdGhpcyBpcyBh...` |
-| Database URLs | `postgres://user:pass@host/db` |
+| URL credentials | `postgres://user:pass@host/db`, `https://user:token@host` |
 | JWTs | `eyJhbG...eyJzdW...signature` |
 | Private key blocks | `-----BEGIN PRIVATE KEY-----` |
 
